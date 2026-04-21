@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="FC Security System">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="FC Security">
+
+  <title>FC Security</title>
+  <link rel="manifest" href="manifest.json">
+
+  <!-- ✅ jsQR — QR code decoder that runs entirely in the browser -->
+  <!-- This is what makes the webcam QR scanner work.            -->
+  <!-- It exposes window.jsQR() which qr_scanner_screen.dart calls via dart:js -->
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+</head>
+<body>
+  <!-- This script installs the service worker to cache Flutter app -->
+  <script>
+    var serviceWorkerVersion = null;
+  </script>
+  <!-- Flutter bootstrap script -->
+  <script src="flutter.js" defer></script>
+  <script>
+    window.addEventListener('load', function(ev) {
+      // Download main.dart.js
+      _flutter.loader.loadEntrypoint({
+        serviceWorker: {
+          serviceWorkerVersion: serviceWorkerVersion,
+        },
+        onEntrypointLoaded: function(engineInitializer) {
+          engineInitializer.initializeEngine().then(function(appRunner) {
+            appRunner.runApp();
+          });
+        }
+      });
+    });
+  </script>
+</body>
+</html>
