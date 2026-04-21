@@ -45,6 +45,4 @@ flutter_launcher_icons:
 flutter:
   uses-material-design: true
   
-  # ✅ Assets directory (if you have images)
-  assets:
-    - assets/images/
+ 
