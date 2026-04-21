@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'api_service.dart'; // ✅ Import your ApiService
+import 'api_service.dart';
 
 class SecuritySideNav extends StatefulWidget {
-  final String activeRoute; // Matches the Admin logic
+  final String activeRoute;
 
   const SecuritySideNav({super.key, required this.activeRoute});
 
@@ -14,7 +14,7 @@ class _SecuritySideNavState extends State<SecuritySideNav> {
   @override
   void initState() {
     super.initState();
-    // ✅ Initialize the global socket listener as soon as the sidebar loads
+    // ✅ Keep the socket initialized for panic alerts across all pages
     ApiService.initSocket();
   }
 
@@ -27,7 +27,7 @@ class _SecuritySideNavState extends State<SecuritySideNav> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // LOGO (Replaced Image with a clean Icon & Text)
+          // LOGO
           Container(
             decoration: BoxDecoration(
               color: Colors.white,
@@ -54,37 +54,56 @@ class _SecuritySideNavState extends State<SecuritySideNav> {
 
           const Spacer(flex: 1),
 
-          // NAV BUTTONS (Using Routes)
-          // Note: We use widget.activeRoute because it's now a StatefulWidget
+          // NAV BUTTONS
           _NavButton(
             "DASHBOARD",
             '/security_dashboard',
             widget.activeRoute,
             context,
+            icon: Icons.dashboard,
           ),
+
           _NavButton(
-            "VISITOR SCANNING",
+            "VISITOR ENTRY",
             '/visitor_scanning',
             widget.activeRoute,
             context,
+            icon: Icons.person_add,
           ),
+
+          _NavButton(
+            "VEHICLE SCANNING",
+            '/vehicle_scanning',
+            widget.activeRoute,
+            context,
+            icon: Icons.qr_code_scanner,
+          ),
+
           _NavButton(
             "PANIC REPORT",
             '/panic_report',
             widget.activeRoute,
             context,
+            icon: Icons.warning_amber_rounded,
           ),
-          _NavButton("LOGS", '/security_logs', widget.activeRoute, context),
+
+          _NavButton(
+            "LOGS",
+            '/security_logs',
+            widget.activeRoute,
+            context,
+            icon: Icons.history,
+          ),
 
           const Spacer(flex: 2),
 
-          // LOGOUT
           _NavButton(
             "LOG OUT",
             '/login',
             widget.activeRoute,
             context,
             isLogout: true,
+            icon: Icons.logout,
           ),
         ],
       ),
@@ -97,6 +116,7 @@ class _SecuritySideNavState extends State<SecuritySideNav> {
     String activeRoute,
     BuildContext context, {
     bool isLogout = false,
+    IconData? icon,
   }) {
     bool isActive = activeRoute == route;
     return Padding(
@@ -106,10 +126,8 @@ class _SecuritySideNavState extends State<SecuritySideNav> {
         child: ElevatedButton(
           onPressed: () {
             if (isLogout) {
-              // Handle Logout logic here
               Navigator.pushReplacementNamed(context, '/login');
             } else if (!isActive) {
-              // Navigate only if different page
               Navigator.pushReplacementNamed(context, route);
             }
           },
@@ -124,13 +142,20 @@ class _SecuritySideNavState extends State<SecuritySideNav> {
             alignment: Alignment.centerLeft,
             padding: const EdgeInsets.symmetric(horizontal: 16),
           ),
-          child: SizedBox(
-            width: double.infinity,
-            child: Text(
-              label,
-              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13),
-              textAlign: TextAlign.center,
-            ),
+          child: Row(
+            children: [
+              if (icon != null) Icon(icon, size: 18),
+              if (icon != null) const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),

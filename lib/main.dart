@@ -6,6 +6,8 @@ import 'security_dashboard.dart';
 import 'visitor_scanning.dart';
 import 'panic_report.dart';
 import 'security_logs.dart';
+// ✅ ADD THIS IMPORT for your new Resident Vehicle QR Scanner pagefl
+import 'vehicle_scanning_page.dart';
 
 // ✅ 1. Add this GlobalKey globally so ApiService can use it for the Panic Pop-up
 final GlobalKey<NavigatorState> globalNavigatorKey =
@@ -47,7 +49,12 @@ class SecurityApp extends StatelessWidget {
             page = const SecurityDashboard();
             break;
           case '/visitor_scanning':
+            // This is your existing page for manual visitor entry
             page = const VisitorScanningScreen();
+            break;
+          // ✅ ADDED THIS CASE so clicking the sidebar doesn't go to login
+          case '/vehicle_scanning':
+            page = const VehicleScanningPage();
             break;
           case '/panic_report':
             page = const PanicReportScreen();
@@ -57,7 +64,7 @@ class SecurityApp extends StatelessWidget {
             break;
 
           default:
-            // If not logged in, you could technically default to login here too
+            // If route not found, go back to login
             page = const SecurityLoginScreen();
         }
 

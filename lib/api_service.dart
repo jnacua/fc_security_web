@@ -40,7 +40,7 @@ class ApiService {
 
   // ✅ THIS FUNCTION OPENS THE NEW TAB
   static Future<void> _launchMap(double lat, double lng) async {
-    // Standard Google Maps URL format for coordinates
+    // Correct Google Maps URL format for coordinates
     final String googleMapsUrl =
         "https://www.google.com/maps/search/?api=1&query=$lat,$lng";
     final Uri url = Uri.parse(googleMapsUrl);
@@ -140,6 +140,27 @@ class ApiService {
         );
       },
     );
+  }
+
+  // ================= VEHICLE SCANNING METHODS =================
+
+  // ✅ NEW: Verify Resident Vehicle QR
+  static Future<Map<String, dynamic>?> verifyVehicleQR(String qrData) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/vehicle/verify/$qrData'),
+        headers: await _getHeaders(),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      }
+      debugPrint("❌ Vehicle verification failed: ${response.statusCode}");
+      return null;
+    } catch (e) {
+      debugPrint("❌ Vehicle Scan Error: $e");
+      return null;
+    }
   }
 
   // ================= LOG FETCHING METHODS =================
