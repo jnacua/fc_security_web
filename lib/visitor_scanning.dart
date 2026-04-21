@@ -12,6 +12,7 @@ class VisitorScanningScreen extends StatefulWidget {
 }
 
 class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
+  // Controllers for manual input
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _purposeController = TextEditingController();
   final TextEditingController _hostController = TextEditingController();
@@ -19,16 +20,12 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
   Map<String, dynamic>? visitorData;
   Map<String, dynamic>? activePanicAlert;
   late IO.Socket socket;
-  Timer? _pollingTimer;
   bool _isSaving = false;
 
   @override
   void initState() {
     super.initState();
     _connectSocket();
-    _pollingTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
-      _fetchLatestVisitorScan();
-    });
   }
 
   void _connectSocket() {
@@ -43,7 +40,6 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
 
   @override
   void dispose() {
-    _pollingTimer?.cancel();
     _nameController.dispose();
     _purposeController.dispose();
     _hostController.dispose();
@@ -52,41 +48,41 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
     super.dispose();
   }
 
-  Future<void> _fetchLatestVisitorScan() async {
-    final data = await ApiService.getLatestSecurityScan();
-    if (data != null && data['visitor'] != null) {
-      if (mounted) {
-        setState(() {
-          visitorData = data['visitor'];
-          _nameController.text = visitorData!['name'] ?? "";
-          _purposeController.text = visitorData!['purpose'] ?? "";
-          _hostController.text = visitorData!['hostName'] ?? "";
-        });
-      }
-    }
-  }
-
-  Future<void> _handleVisitorLog() async {
-    if (_nameController.text.isEmpty || _hostController.text.isEmpty) {
+  // ✅ Previews the data on the right-side panel before saving
+  void _previewVisitorData() {
+    if (_nameController.text.trim().isEmpty ||
+        _hostController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please fill in visitor details")),
+        const SnackBar(
+          content: Text("Please fill in Name and Resident details to preview."),
+        ),
       );
       return;
     }
+    setState(() {
+      visitorData = {
+        'name': _nameController.text.trim(),
+        'purpose': _purposeController.text.trim(),
+        'hostName': _hostController.text.trim(),
+      };
+    });
+  }
+
+  Future<void> _handleVisitorLog() async {
+    if (visitorData == null) return;
 
     setState(() => _isSaving = true);
 
     Map<String, String> visitorInfo = {
-      'name': _nameController.text,
-      'purpose': _purposeController.text,
-      'hostName': _hostController.text,
+      'name': visitorData!['name'],
+      'purpose': visitorData!['purpose'],
+      'hostName': visitorData!['hostName'],
     };
 
-    // ✅ Uses the authenticated logic we set up previously
+    // ✅ Logs the entry to your backend
     bool success = await ApiService.logVisitorEntry(visitorInfo);
 
     if (success) {
-      await ApiService.clearScanSession();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -158,10 +154,14 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
       ),
       child: Row(
         children: [
-          const Icon(Icons.badge_outlined, color: Color(0xFF176F63), size: 32),
+          const Icon(
+            Icons.edit_note_rounded,
+            color: Color(0xFF176F63),
+            size: 32,
+          ),
           const SizedBox(width: 12),
           const Text(
-            "VISITOR MANAGEMENT",
+            "VISITOR REGISTRATION",
             style: TextStyle(
               fontSize: 22,
               fontWeight: FontWeight.w900,
@@ -169,12 +169,19 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
             ),
           ),
           const Spacer(),
-          Text(
-            "STATUS: ACTIVE MONITORING",
-            style: TextStyle(
-              color: Colors.green.shade700,
-              fontWeight: FontWeight.bold,
-              fontSize: 12,
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.green.shade50,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              "STATUS: GATE OPEN",
+              style: TextStyle(
+                color: Colors.green.shade700,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
             ),
           ),
         ],
@@ -192,54 +199,67 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
           BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 20),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            "LOG NEW ENTRY",
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: Colors.blueGrey,
-            ),
-          ),
-          const SizedBox(height: 24),
-          _buildTextField("Visitor Full Name", _nameController, Icons.person),
-          const SizedBox(height: 16),
-          _buildTextField(
-            "Purpose of Visit",
-            _purposeController,
-            Icons.work_outline,
-          ),
-          const SizedBox(height: 16),
-          _buildTextField(
-            "Resident / House No.",
-            _hostController,
-            Icons.home_work,
-          ),
-          const SizedBox(height: 32),
-          ElevatedButton(
-            onPressed: () => setState(() {
-              visitorData = {
-                'name': _nameController.text,
-                'purpose': _purposeController.text,
-                'hostName': _hostController.text,
-              };
-            }),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blueGrey.shade800,
-              foregroundColor: Colors.white,
-              minimumSize: const Size(double.infinity, 55),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              "LOG NEW ENTRY",
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Colors.blueGrey,
               ),
             ),
-            child: const Text(
-              "VERIFY DETAILS",
-              style: TextStyle(fontWeight: FontWeight.bold),
+            const SizedBox(height: 24),
+            _buildTextField("Visitor Full Name", _nameController, Icons.person),
+            const SizedBox(height: 16),
+            _buildTextField(
+              "Purpose of Visit",
+              _purposeController,
+              Icons.work_outline,
             ),
-          ),
-        ],
+            const SizedBox(height: 16),
+            _buildTextField(
+              "Resident Name / House No.",
+              _hostController,
+              Icons.home_work,
+            ),
+            const SizedBox(height: 32),
+            ElevatedButton(
+              onPressed: _previewVisitorData,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blueGrey.shade800,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(double.infinity, 55),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              child: const Text(
+                "PREVIEW LOG",
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: () {
+                setState(() {
+                  visitorData = null;
+                  _nameController.clear();
+                  _purposeController.clear();
+                  _hostController.clear();
+                });
+              },
+              child: const Center(
+                child: Text(
+                  "Clear Fields",
+                  style: TextStyle(color: Colors.grey),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -249,18 +269,36 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
     TextEditingController controller,
     IconData icon,
   ) {
-    return TextField(
-      controller: controller,
-      decoration: InputDecoration(
-        labelText: label,
-        prefixIcon: Icon(icon, color: const Color(0xFF176F63)),
-        filled: true,
-        fillColor: const Color(0xFFF9FAFB),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide.none,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 13,
+            color: Colors.blueGrey,
+          ),
         ),
-      ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: controller,
+          decoration: InputDecoration(
+            prefixIcon: Icon(icon, color: const Color(0xFF176F63)),
+            filled: true,
+            fillColor: const Color(0xFFF9FAFB),
+            hintText: "Enter $label",
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: Colors.grey.shade200),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: Colors.grey.shade200),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -284,10 +322,10 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.qr_code_scanner, size: 80, color: Colors.grey.shade300),
+          Icon(Icons.note_add_outlined, size: 80, color: Colors.grey.shade300),
           const SizedBox(height: 16),
           Text(
-            "Awaiting Visitor Data...",
+            "Waiting for input verification...",
             style: TextStyle(color: Colors.grey.shade400, fontSize: 16),
           ),
         ],
@@ -303,13 +341,13 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
           Container(
             padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
             decoration: BoxDecoration(
-              color: Colors.green.shade50,
+              color: Colors.blue.shade50,
               borderRadius: BorderRadius.circular(30),
             ),
             child: Text(
-              "VERIFIED PROFILE",
+              "PREVIEWING ENTRY",
               style: TextStyle(
-                color: Colors.green.shade700,
+                color: Colors.blue.shade700,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -332,6 +370,12 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
           const Divider(height: 60),
           _buildInfoRow(Icons.info_outline, "Purpose", visitorData!['purpose']),
           const Spacer(),
+          const Text(
+            "Verify that all credentials above are correct before saving to the logbook.",
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey, fontSize: 12),
+          ),
+          const SizedBox(height: 16),
           SizedBox(
             width: double.infinity,
             height: 65,
@@ -348,7 +392,7 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
               child: _isSaving
                   ? const CircularProgressIndicator(color: Colors.white)
                   : const Text(
-                      "CONFIRM & SAVE TO LOGS",
+                      "SAVE TO DIGITAL LOGBOOK",
                       style: TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
@@ -373,7 +417,10 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
             color: Colors.blueGrey,
           ),
         ),
-        Text(value, style: const TextStyle(fontSize: 16)),
+        Text(
+          value.isEmpty ? "N/A" : value,
+          style: const TextStyle(fontSize: 16),
+        ),
       ],
     );
   }
