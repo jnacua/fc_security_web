@@ -1,46 +1,171 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
-import 'package:url_launcher/url_launcher.dart'; // ✅ Required for opening the new tab
+import 'package:url_launcher/url_launcher.dart';
 import '../main.dart';
 
 class ApiService {
   static const String baseUrl = "https://fcapp-backend.onrender.com/api";
   static String? _token;
   static IO.Socket? _socket;
+  static Timer? _heartbeatTimer;
+  static Timer? _pollingTimer;
+  static int _reconnectAttempts = 0;
+  static final int maxReconnectAttempts = 20;
+  static bool _isSocketInitialized = false;
 
   // ================= GLOBAL SOCKET & PANIC ALERTS =================
 
-  static IO.Socket initSocket() {
-    if (_socket != null) return _socket!;
+  static void initSocketAndListen() {
+    if (_isSocketInitialized) return;
+    _isSocketInitialized = true;
 
+    initSocket();
+    _startEmergencyPolling(); // Backup polling
+  }
+
+  static IO.Socket initSocket() {
+    if (_socket != null && _socket!.connected) {
+      debugPrint('✅ Socket already connected');
+      return _socket!;
+    }
+
+    if (_socket != null) {
+      _socket!.disconnect();
+      _socket!.clearListeners();
+    }
+
+    debugPrint('🔌 Initializing socket connection...');
+
+    // ✅ FIXED: Correct syntax for socket_io_client 3.1.4
     _socket = IO.io(
       'https://fcapp-backend.onrender.com',
       IO.OptionBuilder()
-          .setTransports(['websocket', 'polling'])
-          .enableAutoConnect()
-          .build(),
+          .setTransports(['polling', 'websocket']) // Polling first for Vercel
+          .setPath('/socket.io')
+          .enableAutoConnect() // ✅ No argument needed
+          .setReconnectionAttempts(maxReconnectAttempts)
+          .setReconnectionDelay(2000)
+          .setReconnectionDelayMax(15000)
+          .setTimeout(40000)
+          .build(), // ✅ Build after all options
     );
 
-    _socket!.onConnect((_) => debugPrint('✅ Security Socket Connected'));
-    _socket!.onConnectError(
-      (err) => debugPrint('❌ Socket Connect Error: $err'),
-    );
-    _socket!.onDisconnect((_) => debugPrint('❌ Security Socket Disconnected'));
+    _socket!.onConnect((_) {
+      debugPrint('✅ Security Socket Connected! ID: ${_socket!.id}');
+      _reconnectAttempts = 0;
+      _startHeartbeat();
+    });
+
+    _socket!.onConnectError((err) {
+      debugPrint('❌ Socket Connect Error: $err');
+      _reconnectAttempts++;
+    });
+
+    _socket!.onError((err) {
+      debugPrint('⚠️ Socket Error: $err');
+    });
+
+    _socket!.onDisconnect((_) {
+      debugPrint('❌ Security Socket Disconnected');
+      _stopHeartbeat();
+    });
 
     _socket!.on('emergency-alert', (data) {
-      debugPrint("🚨 EMERGENCY EVENT RECEIVED: $data");
+      debugPrint("🚨 EMERGENCY EVENT RECEIVED!");
+      debugPrint("📦 Data: $data");
       _showGlobalPanicDialog(data);
     });
+
+    _socket!.on('panic-resolved', (data) {
+      debugPrint("✅ Panic resolved: $data");
+    });
+
+    _socket!.on('pong', (_) {
+      debugPrint('💓 Heartbeat received');
+    });
+
+    _socket!.connect();
+    debugPrint('🔌 Socket connect() called');
 
     return _socket!;
   }
 
+  static void _startHeartbeat() {
+    _stopHeartbeat();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 25), (timer) {
+      if (_socket != null && _socket!.connected) {
+        _socket!.emit('ping');
+        debugPrint('💓 Heartbeat sent');
+      }
+    });
+  }
+
+  static void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+  }
+
+  static void _startEmergencyPolling() {
+    _pollingTimer?.cancel();
+    _pollingTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
+      try {
+        final token = await _getToken();
+        if (token == null) return;
+
+        final response = await http
+            .get(
+              Uri.parse('$baseUrl/panic/active'),
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer $token',
+              },
+            )
+            .timeout(const Duration(seconds: 8));
+
+        if (response.statusCode == 200) {
+          final List<dynamic> activePanics = jsonDecode(response.body);
+          if (activePanics.isNotEmpty) {
+            for (var panic in activePanics) {
+              // Only show if not already shown
+              _showGlobalPanicDialog({
+                'id': panic['_id'],
+                'name': panic['residentName'],
+                'blockLot': panic['houseNo'],
+                'latitude': panic['location']?['latitude'],
+                'longitude': panic['location']?['longitude'],
+                'status': 'ACTIVE',
+              });
+            }
+          }
+        }
+      } catch (e) {
+        // Silent fail - don't spam console
+      }
+    });
+  }
+
+  static void _stopEmergencyPolling() {
+    _pollingTimer?.cancel();
+    _pollingTimer = null;
+  }
+
+  static void disconnectSocket() {
+    _stopHeartbeat();
+    _stopEmergencyPolling();
+    _socket?.disconnect();
+    _socket?.clearListeners();
+    _socket = null;
+    _isSocketInitialized = false;
+    _reconnectAttempts = 0;
+    debugPrint('🔌 Socket manually disconnected');
+  }
+
   // ✅ THIS FUNCTION OPENS THE NEW TAB
   static Future<void> _launchMap(double lat, double lng) async {
-    // Correct Google Maps URL format for coordinates
     final String googleMapsUrl =
         "https://www.google.com/maps/search/?api=1&query=$lat,$lng";
     final Uri url = Uri.parse(googleMapsUrl);
@@ -94,7 +219,8 @@ class ApiService {
                 ),
                 const Divider(height: 40, thickness: 2),
                 Text(
-                  "RESIDENT: ${data['name'] ?? 'UNKNOWN'}".toUpperCase(),
+                  "RESIDENT: ${data['name'] ?? data['residentName'] ?? 'UNKNOWN'}"
+                      .toUpperCase(),
                   style: const TextStyle(
                     fontSize: 22,
                     fontWeight: FontWeight.bold,
@@ -102,12 +228,11 @@ class ApiService {
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  "LOCATION: ${data['blockLot'] ?? 'UNKNOWN'}",
+                  "LOCATION: ${data['blockLot'] ?? data['houseNo'] ?? 'UNKNOWN'}",
                   style: const TextStyle(fontSize: 20, color: Colors.black87),
                 ),
                 const SizedBox(height: 40),
 
-                // ✅ BUTTON TO GO TO THE MAP
                 ElevatedButton.icon(
                   onPressed: () => _launchMap(lat, lng),
                   icon: const Icon(Icons.map_outlined),
@@ -142,9 +267,23 @@ class ApiService {
     );
   }
 
+  // ================= RESOLVE PANIC =================
+  static Future<bool> resolvePanic(String panicId) async {
+    try {
+      final response = await http.patch(
+        Uri.parse('$baseUrl/panic/resolve/$panicId'),
+        headers: await _getHeaders(),
+      );
+      debugPrint("📡 Resolve Panic Status: ${response.statusCode}");
+      return response.statusCode == 200;
+    } catch (e) {
+      debugPrint("❌ Resolve Panic Error: $e");
+      return false;
+    }
+  }
+
   // ================= VEHICLE SCANNING METHODS =================
 
-  // ✅ NEW: Verify Resident Vehicle QR (UPDATED to match backend endpoint)
   static Future<Map<String, dynamic>?> verifyVehicleQR(String qrData) async {
     try {
       final response = await http.get(
@@ -179,7 +318,6 @@ class ApiService {
     }
   }
 
-  // ✅ NEW: Search vehicle by plate number (manual entry)
   static Future<Map<String, dynamic>?> searchVehicleByPlate(
     String licenseNumber,
   ) async {
@@ -203,13 +341,10 @@ class ApiService {
 
   // ================= LOG FETCHING METHODS =================
 
-  // ✅ NEW: Fetch all consolidated security logs (Visitors + Panics)
   static Future<List<dynamic>> getAllSecurityLogs() async {
     try {
       final response = await http.get(
-        Uri.parse(
-          '$baseUrl/logs/all',
-        ), // This endpoint should combine your visitor and panic data
+        Uri.parse('$baseUrl/logs/all'),
         headers: await _getHeaders(),
       );
 
@@ -224,13 +359,10 @@ class ApiService {
     }
   }
 
-  // ✅ NEW: Fetch Real-time Dashboard Statistics
   static Future<Map<String, dynamic>> getSecurityDashboardStats() async {
     try {
       final response = await http.get(
-        Uri.parse(
-          '$baseUrl/logs/security-stats',
-        ), // Endpoint for the 4 stat cards
+        Uri.parse('$baseUrl/logs/security-stats'),
         headers: await _getHeaders(),
       );
       if (response.statusCode == 200) {
@@ -315,6 +447,10 @@ class ApiService {
         await prefs.setString('jwt_token', data['token']);
         await prefs.setString('auth_token', data['token']);
         _token = data['token'];
+
+        // Initialize socket after successful login
+        initSocketAndListen();
+
         return data;
       }
       return null;

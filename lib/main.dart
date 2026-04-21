@@ -1,18 +1,26 @@
 import 'package:flutter/material.dart';
+import 'api_service.dart'; // Adjust path as needed
 
 // SCREEN IMPORTS
-import 'security_login_screen.dart'; // ✅ Added Login Screen Import
+import 'security_login_screen.dart';
 import 'security_dashboard.dart';
 import 'visitor_scanning.dart';
 import 'panic_report.dart';
-import 'security_logs.dart'; // ✅ Fixed: This imports SecurityLogs class
-import 'vehicle_scanning_page.dart'; // ✅ Your vehicle scanner page
+import 'security_logs.dart';
+import 'vehicle_scanning_page.dart';
 
 // ✅ GlobalKey for ApiService to use for the Panic Pop-up
 final GlobalKey<NavigatorState> globalNavigatorKey =
     GlobalKey<NavigatorState>();
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // ✅ Initialize socket connection on app start
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    ApiService.initSocketAndListen();
+  });
+
   runApp(const SecurityApp());
 }
 
@@ -57,7 +65,6 @@ class SecurityApp extends StatelessWidget {
             page = const PanicReportScreen();
             break;
           case '/security_logs':
-            // ✅ FIXED: Use SecurityLogs (not SecurityLogsScreen)
             page = const SecurityLogs();
             break;
           default:
