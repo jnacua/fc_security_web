@@ -5,11 +5,10 @@ import 'security_login_screen.dart'; // ✅ Added Login Screen Import
 import 'security_dashboard.dart';
 import 'visitor_scanning.dart';
 import 'panic_report.dart';
-import 'security_logs.dart';
-// ✅ ADD THIS IMPORT for your new Resident Vehicle QR Scanner pagefl
-import 'vehicle_scanning_page.dart';
+import 'security_logs.dart'; // ✅ Fixed: This imports SecurityLogs class
+import 'vehicle_scanning_page.dart'; // ✅ Your vehicle scanner page
 
-// ✅ 1. Add this GlobalKey globally so ApiService can use it for the Panic Pop-up
+// ✅ GlobalKey for ApiService to use for the Panic Pop-up
 final GlobalKey<NavigatorState> globalNavigatorKey =
     GlobalKey<NavigatorState>();
 
@@ -25,7 +24,7 @@ class SecurityApp extends StatelessWidget {
     return MaterialApp(
       title: 'Fiesta Casitas Security',
 
-      // ✅ 2. Attach the master key to your MaterialApp
+      // ✅ Attach the master key to your MaterialApp
       navigatorKey: globalNavigatorKey,
 
       debugShowCheckedModeBanner: false,
@@ -42,17 +41,15 @@ class SecurityApp extends StatelessWidget {
         Widget page;
 
         switch (settings.name) {
-          case '/login': // ✅ Added Login Case
+          case '/login':
             page = const SecurityLoginScreen();
             break;
           case '/security_dashboard':
             page = const SecurityDashboard();
             break;
           case '/visitor_scanning':
-            // This is your existing page for manual visitor entry
             page = const VisitorScanningScreen();
             break;
-          // ✅ ADDED THIS CASE so clicking the sidebar doesn't go to login
           case '/vehicle_scanning':
             page = const VehicleScanningPage();
             break;
@@ -60,11 +57,10 @@ class SecurityApp extends StatelessWidget {
             page = const PanicReportScreen();
             break;
           case '/security_logs':
-            page = const SecurityLogsScreen();
+            // ✅ FIXED: Use SecurityLogs (not SecurityLogsScreen)
+            page = const SecurityLogs();
             break;
-
           default:
-            // If route not found, go back to login
             page = const SecurityLoginScreen();
         }
 

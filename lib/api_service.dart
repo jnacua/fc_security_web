@@ -144,21 +144,59 @@ class ApiService {
 
   // ================= VEHICLE SCANNING METHODS =================
 
-  // ✅ NEW: Verify Resident Vehicle QR
+  // ✅ NEW: Verify Resident Vehicle QR (UPDATED to match backend endpoint)
   static Future<Map<String, dynamic>?> verifyVehicleQR(String qrData) async {
     try {
       final response = await http.get(
-        Uri.parse('$baseUrl/vehicle/verify/$qrData'),
+        Uri.parse('$baseUrl/vehicles/scan/${Uri.encodeComponent(qrData)}'),
+        headers: await _getHeaders(),
+      );
+
+      debugPrint("📡 Vehicle Scan Response Status: ${response.statusCode}");
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> responseData = jsonDecode(response.body);
+        debugPrint("✅ Vehicle verified successfully: ${responseData['data']}");
+        return responseData;
+      } else if (response.statusCode == 403) {
+        final Map<String, dynamic> errorData = jsonDecode(response.body);
+        debugPrint("❌ Vehicle not approved: ${errorData['message']}");
+        return {
+          'success': false,
+          'message': errorData['message'],
+          'status': errorData['status'],
+        };
+      } else if (response.statusCode == 404) {
+        debugPrint("❌ Vehicle not found");
+        return {'success': false, 'message': 'Vehicle not found in the system'};
+      } else {
+        debugPrint("❌ Vehicle verification failed: ${response.statusCode}");
+        return {'success': false, 'message': 'Failed to verify vehicle'};
+      }
+    } catch (e) {
+      debugPrint("❌ Vehicle Scan Error: $e");
+      return {'success': false, 'message': 'Network error: ${e.toString()}'};
+    }
+  }
+
+  // ✅ NEW: Search vehicle by plate number (manual entry)
+  static Future<Map<String, dynamic>?> searchVehicleByPlate(
+    String licenseNumber,
+  ) async {
+    try {
+      final response = await http.get(
+        Uri.parse(
+          '$baseUrl/vehicles/search/${Uri.encodeComponent(licenseNumber)}',
+        ),
         headers: await _getHeaders(),
       );
 
       if (response.statusCode == 200) {
         return jsonDecode(response.body);
       }
-      debugPrint("❌ Vehicle verification failed: ${response.statusCode}");
       return null;
     } catch (e) {
-      debugPrint("❌ Vehicle Scan Error: $e");
+      debugPrint("❌ Vehicle Search Error: $e");
       return null;
     }
   }

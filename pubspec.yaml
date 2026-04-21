@@ -22,6 +22,10 @@ dependencies:
   # ✅ Version 5.x+ is highly recommended for stable Flutter Web camera support
   mobile_scanner: ^5.1.1 
   google_fonts: ^6.2.1
+  
+  # ✅ PDF and Printing dependencies for reports
+  printing: ^5.11.1
+  pdf: ^3.10.7
 
 dev_dependencies:
   flutter_test:
@@ -40,5 +44,7 @@ flutter_launcher_icons:
 
 flutter:
   uses-material-design: true
+  
+  # ✅ Assets directory (if you have images)
   assets:
     - assets/images/
