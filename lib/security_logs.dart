@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:printing/printing.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 import 'security_sidebar.dart';
 import 'api_service.dart';
 
@@ -17,25 +19,98 @@ class _SecurityLogsState extends State<SecurityLogs> {
   String _searchQuery = '';
   String _filterType = 'ALL';
   bool _isPrinting = false;
+  List<dynamic> _localLogs = [];
+  bool _isLoadingLocal = true;
 
   @override
   void initState() {
     super.initState();
+    _loadLocalLogs();
     _refreshLogs();
+  }
+
+  // ✅ Load local logs from SharedPreferences
+  Future<void> _loadLocalLogs() async {
+    setState(() {
+      _isLoadingLocal = true;
+    });
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final localLogsJson = prefs.getStringList('vehicle_scan_logs') ?? [];
+
+      List<dynamic> localLogs = [];
+      for (var logJson in localLogsJson) {
+        try {
+          final log = jsonDecode(logJson);
+          localLogs.add(log);
+        } catch (e) {
+          print("Error parsing log: $e");
+        }
+      }
+
+      setState(() {
+        _localLogs = localLogs;
+        _isLoadingLocal = false;
+      });
+
+      print("✅ Loaded ${_localLogs.length} local logs");
+    } catch (e) {
+      print("❌ Error loading local logs: $e");
+      setState(() {
+        _isLoadingLocal = false;
+      });
+    }
   }
 
   void _refreshLogs() {
     setState(() {
       _logsFuture = ApiService.getAllSecurityLogs();
     });
+    _loadLocalLogs();
+  }
+
+  // ✅ Combine local and backend logs
+  Future<List<dynamic>> _getCombinedLogs() async {
+    final backendLogs = await _logsFuture;
+    List<dynamic> combinedLogs = [..._localLogs];
+
+    if (backendLogs != null) {
+      combinedLogs.addAll(backendLogs);
+    }
+
+    // Remove duplicates based on plateNumber and timestamp
+    final uniqueLogs = <String, dynamic>{};
+    for (var log in combinedLogs) {
+      final key =
+          '${log['plateNumber']}_${log['scanTimestamp'] ?? log['localSaveTime'] ?? log['createdAt']}';
+      if (!uniqueLogs.containsKey(key)) {
+        uniqueLogs[key] = log;
+      }
+    }
+
+    // Sort by timestamp (newest first)
+    final sortedLogs = uniqueLogs.values.toList();
+    sortedLogs.sort((a, b) {
+      final timeA =
+          a['scanTimestamp'] ?? a['localSaveTime'] ?? a['createdAt'] ?? '';
+      final timeB =
+          b['scanTimestamp'] ?? b['localSaveTime'] ?? b['createdAt'] ?? '';
+      return timeB.compareTo(timeA);
+    });
+
+    return sortedLogs;
   }
 
   // ✅ Filter logs based on search query and type filter
   List<dynamic> _filterLogs(List<dynamic> logs) {
     return logs.where((log) {
       // Filter by type
-      if (_filterType != 'ALL' && log['type'] != _filterType) {
-        return false;
+      if (_filterType != 'ALL') {
+        final logType = log['type'] ?? 'VEHICLE_SCAN';
+        if (logType != _filterType) {
+          return false;
+        }
       }
 
       // Filter by search query (name, plate number, or block)
@@ -145,9 +220,11 @@ class _SecurityLogsState extends State<SecurityLogs> {
               cellPadding: const pw.EdgeInsets.all(5),
               data: logs.map((log) {
                 final timestamp = _formatTimestampForPDF(
-                  log['scanTimestamp'] ?? log['timestamp'] ?? log['createdAt'],
+                  log['scanTimestamp'] ??
+                      log['localSaveTime'] ??
+                      log['createdAt'],
                 );
-                final type = _getLogTypeDisplay(log['type'] ?? 'UNKNOWN');
+                final type = _getLogTypeDisplay(log['type'] ?? 'VEHICLE_SCAN');
                 final details = _getLogDetails(log);
                 final status = log['status'] ?? 'COMPLETED';
                 return [timestamp, type, details, status];
@@ -220,16 +297,18 @@ class _SecurityLogsState extends State<SecurityLogs> {
               subtitle: const Text("Export all vehicle scan records"),
               onTap: () async {
                 Navigator.pop(context);
-                final logs = await _logsFuture;
-                if (logs != null) {
-                  final vehicleLogs = logs
-                      .where((log) => log['type'] == 'VEHICLE_SCAN')
-                      .toList();
-                  await _generatePDFReport(
-                    vehicleLogs,
-                    "VEHICLE SCAN LOGS REPORT",
-                  );
-                }
+                final combinedLogs = await _getCombinedLogs();
+                final vehicleLogs = combinedLogs
+                    .where(
+                      (log) =>
+                          log['type'] == 'VEHICLE_SCAN' ||
+                          log['plateNumber'] != null,
+                    )
+                    .toList();
+                await _generatePDFReport(
+                  vehicleLogs,
+                  "VEHICLE SCAN LOGS REPORT",
+                );
               },
             ),
             ListTile(
@@ -240,7 +319,6 @@ class _SecurityLogsState extends State<SecurityLogs> {
                 Navigator.pop(context);
                 final logs = await _logsFuture;
                 if (logs != null) {
-                  // ✅ FIXED: Removed 'const' keyword
                   final panicLogs = logs
                       .where((log) => log['type'] == 'PANIC')
                       .toList();
@@ -273,13 +351,11 @@ class _SecurityLogsState extends State<SecurityLogs> {
               subtitle: const Text("Export all security logs"),
               onTap: () async {
                 Navigator.pop(context);
-                final logs = await _logsFuture;
-                if (logs != null) {
-                  await _generatePDFReport(
-                    logs,
-                    "COMPLETE SECURITY LOGS REPORT",
-                  );
-                }
+                final combinedLogs = await _getCombinedLogs();
+                await _generatePDFReport(
+                  combinedLogs,
+                  "COMPLETE SECURITY LOGS REPORT",
+                );
               },
             ),
           ],
@@ -304,7 +380,7 @@ class _SecurityLogsState extends State<SecurityLogs> {
       case 'VISITOR':
         return 'VISITOR';
       default:
-        return type.toUpperCase();
+        return 'VEHICLE';
     }
   }
 
@@ -318,13 +394,13 @@ class _SecurityLogsState extends State<SecurityLogs> {
       case 'VISITOR':
         return Colors.blue;
       default:
-        return Colors.grey;
+        return Colors.green;
     }
   }
 
   // ✅ Get log details text
   String _getLogDetails(Map<String, dynamic> log) {
-    final type = log['type']?.toUpperCase() ?? '';
+    final type = log['type']?.toUpperCase() ?? 'VEHICLE_SCAN';
 
     switch (type) {
       case 'VEHICLE_SCAN':
@@ -345,7 +421,9 @@ class _SecurityLogsState extends State<SecurityLogs> {
             log['name'] ??
             'Visitor Entry';
       default:
-        return log['details'] ?? 'N/A';
+        final plateNumber = log['plateNumber'] ?? 'N/A';
+        final ownerName = log['ownerName'] ?? '';
+        return '$plateNumber - $ownerName';
     }
   }
 
@@ -361,7 +439,7 @@ class _SecurityLogsState extends State<SecurityLogs> {
     } else if (statusUpper == 'REJECTED') {
       return Colors.red;
     }
-    return Colors.grey;
+    return Colors.green;
   }
 
   // ✅ Get formatted timestamp
@@ -439,10 +517,11 @@ class _SecurityLogsState extends State<SecurityLogs> {
                           _buildTableHeader(),
                           Expanded(
                             child: FutureBuilder<List<dynamic>>(
-                              future: _logsFuture,
+                              future: _getCombinedLogs(),
                               builder: (context, snapshot) {
                                 if (snapshot.connectionState ==
-                                    ConnectionState.waiting) {
+                                        ConnectionState.waiting ||
+                                    _isLoadingLocal) {
                                   return const Center(
                                     child: CircularProgressIndicator(),
                                   );
@@ -489,7 +568,7 @@ class _SecurityLogsState extends State<SecurityLogs> {
                                         Text("No logs found."),
                                         SizedBox(height: 5),
                                         Text(
-                                          "Scan a vehicle or wait for panic alerts",
+                                          "Scan a vehicle QR code to see logs here",
                                           style: TextStyle(
                                             fontSize: 12,
                                             color: Colors.grey,
@@ -523,14 +602,14 @@ class _SecurityLogsState extends State<SecurityLogs> {
                                     itemBuilder: (context, index) {
                                       final log = filteredLogs[index];
                                       final logType = _getLogTypeDisplay(
-                                        log['type'] ?? 'UNKNOWN',
+                                        log['type'] ?? 'VEHICLE_SCAN',
                                       );
                                       final logDetails = _getLogDetails(log);
                                       final status =
-                                          log['status'] ?? 'COMPLETED';
+                                          log['status'] ?? 'APPROVED';
                                       final timestamp = _formatTimestamp(
                                         log['scanTimestamp'] ??
-                                            log['timestamp'] ??
+                                            log['localSaveTime'] ??
                                             log['createdAt'],
                                       );
 
@@ -540,7 +619,7 @@ class _SecurityLogsState extends State<SecurityLogs> {
                                         status,
                                         timestamp,
                                         _getLogTypeColor(
-                                          log['type'] ?? 'UNKNOWN',
+                                          log['type'] ?? 'VEHICLE_SCAN',
                                         ),
                                       );
                                     },
