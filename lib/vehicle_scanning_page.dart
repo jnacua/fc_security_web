@@ -5,7 +5,7 @@ import 'api_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'security_logs.dart'; // ✅ Corrected import (no underscore)
+import 'security_logs.dart';
 
 class VehicleScanningPage extends StatefulWidget {
   const VehicleScanningPage({super.key});
@@ -18,6 +18,19 @@ class _VehicleScanningPageState extends State<VehicleScanningPage> {
   final MobileScannerController cameraController = MobileScannerController();
   bool _isProcessing = false;
   String? _apiBaseUrl;
+
+  // ✅ Dummy data for demonstration
+  final Map<String, dynamic> _dummyVehicleData = {
+    'plateNumber': 'EOW 3293',
+    'ownerName': 'JEIAN PAOLO C. NACUA',
+    'ownerEmail': 'jeianpaolonacua@gmail.com',
+    'ownerMobile': '09123456789',
+    'ownerAddress': 'Block 1, Lot 2, Fiesta Casitas Subdivision',
+    'residentType': 'OWNER',
+    'vehicleType': 'SUV',
+    'status': 'Approved',
+    'qrData': 'VEHICLE-EOW3293-1734567890123',
+  };
 
   @override
   void initState() {
@@ -55,59 +68,32 @@ class _VehicleScanningPageState extends State<VehicleScanningPage> {
         _isProcessing = true;
       });
 
-      // Fetch vehicle details and save to logs
-      await _fetchAndSaveVehicleDetails(qrData);
+      // ✅ Show dummy data immediately when QR is scanned
+      await _showDummyDataAndSaveToLogs(qrData);
     }
   }
 
-  Future<void> _fetchAndSaveVehicleDetails(String qrData) async {
+  // ✅ New method to show dummy data and save to logs
+  Future<void> _showDummyDataAndSaveToLogs(String qrData) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token =
-          prefs.getString('auth_token') ?? prefs.getString('jwt_token');
+      // Show loading indicator briefly
+      await Future.delayed(const Duration(milliseconds: 500));
 
-      if (token == null) {
-        _showErrorDialog("Authentication error. Please login again.");
-        return;
-      }
+      // ✅ Use dummy data for convincing demo
+      final vehicleData = _dummyVehicleData;
 
-      // Call the backend to get vehicle details
-      final response = await http
-          .get(
-            Uri.parse(
-              '$_apiBaseUrl/vehicles/scan/${Uri.encodeComponent(qrData)}',
-            ),
-            headers: {
-              "Authorization": "Bearer $token",
-              "Content-Type": "application/json",
-            },
-          )
-          .timeout(const Duration(seconds: 10));
+      debugPrint("✅ Using dummy vehicle data for demo");
+      debugPrint("   Plate: ${vehicleData['plateNumber']}");
+      debugPrint("   Owner: ${vehicleData['ownerName']}");
 
-      if (response.statusCode == 200) {
-        final Map<String, dynamic> responseData = jsonDecode(response.body);
-        final vehicleData = responseData['data'];
+      // Save to logs (try backend, but don't fail if it doesn't work)
+      await _saveToLogs(vehicleData);
 
-        // ✅ Save to logs after successful scan
-        final bool saved = await _saveToLogs(vehicleData);
-
-        if (saved) {
-          // ✅ Show success and navigate to logs
-          _showSuccessAndNavigateToLogs(vehicleData);
-        } else {
-          _showErrorDialog("Failed to save scan to logs");
-        }
-      } else if (response.statusCode == 403) {
-        final errorData = jsonDecode(response.body);
-        _showErrorDialog(errorData['message'] ?? "Vehicle not approved yet");
-      } else if (response.statusCode == 404) {
-        _showErrorDialog("Vehicle not found in the system");
-      } else {
-        _showErrorDialog("Failed to fetch vehicle details");
-      }
+      // Show vehicle details dialog
+      _showVehicleDetailsDialog(vehicleData);
     } catch (e) {
-      print("❌ Error fetching vehicle details: $e");
-      _showErrorDialog("Network error. Please try again.");
+      debugPrint("❌ Error showing dummy data: $e");
+      _showErrorDialog("Error displaying vehicle data");
     } finally {
       setState(() {
         _isProcessing = false;
@@ -115,14 +101,18 @@ class _VehicleScanningPageState extends State<VehicleScanningPage> {
     }
   }
 
-  // ✅ Save scan to logs
-  Future<bool> _saveToLogs(Map<String, dynamic> vehicleData) async {
+  // ✅ Save scan to logs (with fallback)
+  Future<void> _saveToLogs(Map<String, dynamic> vehicleData) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final token =
           prefs.getString('auth_token') ?? prefs.getString('jwt_token');
 
-      if (token == null) return false;
+      if (token == null) {
+        // Save locally only
+        await _saveToLocalLogs(vehicleData);
+        return;
+      }
 
       final logEntry = {
         'type': 'vehicle_scan',
@@ -137,32 +127,32 @@ class _VehicleScanningPageState extends State<VehicleScanningPage> {
         'status': 'APPROVED & AUTHORIZED',
       };
 
-      // Send to backend logs
-      final response = await http
-          .post(
-            Uri.parse('$_apiBaseUrl/logs/vehicle-scan'),
-            headers: {
-              "Authorization": "Bearer $token",
-              "Content-Type": "application/json",
-            },
-            body: jsonEncode(logEntry),
-          )
-          .timeout(const Duration(seconds: 10));
+      // Try to send to backend logs
+      try {
+        final response = await http
+            .post(
+              Uri.parse('$_apiBaseUrl/logs/vehicle-scan'),
+              headers: {
+                "Authorization": "Bearer $token",
+                "Content-Type": "application/json",
+              },
+              body: jsonEncode(logEntry),
+            )
+            .timeout(const Duration(seconds: 5));
 
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        print("✅ Scan saved to logs successfully");
-        return true;
-      } else {
-        print("⚠️ Failed to save scan to logs: ${response.statusCode}");
-        // Also save locally as backup
-        await _saveToLocalLogs(logEntry);
-        return false;
+        if (response.statusCode == 200 || response.statusCode == 201) {
+          debugPrint("✅ Scan saved to logs successfully");
+        } else {
+          debugPrint("⚠️ Failed to save scan to logs, saving locally");
+          await _saveToLocalLogs(vehicleData);
+        }
+      } catch (e) {
+        debugPrint("⚠️ Backend log save failed, saving locally: $e");
+        await _saveToLocalLogs(vehicleData);
       }
     } catch (e) {
-      print("❌ Error saving to logs: $e");
-      // Save locally as backup
+      debugPrint("❌ Error saving to logs: $e");
       await _saveToLocalLogs(vehicleData);
-      return false;
     }
   }
 
@@ -172,7 +162,14 @@ class _VehicleScanningPageState extends State<VehicleScanningPage> {
       final prefs = await SharedPreferences.getInstance();
       final existingLogs = prefs.getStringList('vehicle_scan_logs') ?? [];
       final newLogs = List<String>.from(existingLogs);
-      newLogs.add(jsonEncode(logEntry));
+
+      final logWithTimestamp = {
+        ...logEntry,
+        'localSaveTime': DateTime.now().toIso8601String(),
+        'isLocalBackup': true,
+      };
+
+      newLogs.add(jsonEncode(logWithTimestamp));
 
       // Keep only last 100 logs
       if (newLogs.length > 100) {
@@ -180,63 +177,147 @@ class _VehicleScanningPageState extends State<VehicleScanningPage> {
       }
 
       await prefs.setStringList('vehicle_scan_logs', newLogs);
-      print("✅ Scan saved to local logs");
+      debugPrint("✅ Scan saved to local logs");
     } catch (e) {
-      print("❌ Error saving to local logs: $e");
+      debugPrint("❌ Error saving to local logs: $e");
     }
   }
 
-  // ✅ Show success and navigate to logs
-  void _showSuccessAndNavigateToLogs(Map<String, dynamic> vehicleData) {
+  void _showVehicleDetailsDialog(Map<String, dynamic> vehicleData) {
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: Row(
           children: const [
-            Icon(Icons.check_circle, color: Colors.green),
+            Icon(Icons.verified_user, color: Colors.green),
             SizedBox(width: 10),
-            Text("SCAN SUCCESSFUL"),
+            Text("AUTHORIZED VEHICLE"),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.verified, color: Colors.green, size: 60),
-            const SizedBox(height: 16),
-            Text(
-              "Vehicle: ${vehicleData['plateNumber']}",
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              "Owner: ${vehicleData['ownerName']}",
-              style: const TextStyle(fontSize: 14),
-            ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.blue.shade50,
-                borderRadius: BorderRadius.circular(8),
+        content: Container(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Divider(),
+              _buildInfoRow(
+                Icons.directions_car,
+                "Plate Number",
+                vehicleData['plateNumber'] ?? 'N/A',
               ),
-              child: Row(
-                children: [
-                  Icon(Icons.history, color: Colors.blue.shade700, size: 16),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      "Scan saved to logs at ${DateTime.now().toString().substring(0, 19)}",
+              const SizedBox(height: 12),
+              _buildInfoRow(
+                Icons.person,
+                "Owner Name",
+                vehicleData['ownerName'] ?? 'N/A',
+              ),
+              const SizedBox(height: 12),
+              _buildInfoRow(
+                Icons.email,
+                "Email",
+                vehicleData['ownerEmail'] ?? 'N/A',
+              ),
+              const SizedBox(height: 12),
+              _buildInfoRow(
+                Icons.phone,
+                "Mobile",
+                vehicleData['ownerMobile'] ?? 'N/A',
+              ),
+              const SizedBox(height: 12),
+              _buildInfoRow(
+                Icons.home,
+                "Address",
+                vehicleData['ownerAddress'] ?? 'N/A',
+              ),
+              const SizedBox(height: 12),
+              _buildInfoRow(
+                Icons.badge,
+                "Resident Type",
+                vehicleData['residentType'] ?? 'N/A',
+              ),
+              const SizedBox(height: 12),
+              _buildInfoRow(
+                Icons.electric_car,
+                "Vehicle Type",
+                vehicleData['vehicleType'] ?? 'N/A',
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.green.shade200),
+                ),
+                child: Row(
+                  children: const [
+                    Icon(Icons.check_circle, color: Colors.green, size: 20),
+                    SizedBox(width: 8),
+                    Text(
+                      "STATUS: APPROVED & AUTHORIZED",
                       style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.blue.shade700,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.green,
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-          ],
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.history, color: Colors.blue.shade700, size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        "Scan logged: ${DateTime.now().toString().substring(0, 19)}",
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.blue.shade700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.amber.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.amber.shade200),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.info_outline,
+                      color: Colors.amber.shade700,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        "DEMO MODE: This is sample data for demonstration purposes.",
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -252,6 +333,35 @@ class _VehicleScanningPageState extends State<VehicleScanningPage> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildInfoRow(IconData icon, String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 20, color: Colors.grey.shade600),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                value.isNotEmpty ? value : 'N/A',
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -398,6 +508,36 @@ class _VehicleScanningPageState extends State<VehicleScanningPage> {
                               onPressed: () => cameraController.switchCamera(),
                             ),
                           ],
+                        ),
+                        const SizedBox(height: 20),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.amber.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.amber.shade200),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.info_outline,
+                                size: 16,
+                                color: Colors.amber.shade700,
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                "DEMO MODE: Scanning shows sample vehicle data",
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.amber.shade800,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ],
                     ),
