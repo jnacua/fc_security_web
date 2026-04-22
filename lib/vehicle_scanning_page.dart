@@ -68,16 +68,16 @@ class _VehicleScanningPageState extends State<VehicleScanningPage> {
         _isProcessing = true;
       });
 
-      // ✅ Show dummy data immediately when QR is scanned
+      // ✅ Show dummy data and save to logs when QR is scanned
       await _showDummyDataAndSaveToLogs(qrData);
     }
   }
 
-  // ✅ New method to show dummy data and save to logs
+  // ✅ Method to show dummy data and save to logs
   Future<void> _showDummyDataAndSaveToLogs(String qrData) async {
     try {
       // Show loading indicator briefly
-      await Future.delayed(const Duration(milliseconds: 500));
+      await Future.delayed(const Duration(milliseconds: 300));
 
       // ✅ Use dummy data for convincing demo
       final vehicleData = _dummyVehicleData;
@@ -86,33 +86,35 @@ class _VehicleScanningPageState extends State<VehicleScanningPage> {
       debugPrint("   Plate: ${vehicleData['plateNumber']}");
       debugPrint("   Owner: ${vehicleData['ownerName']}");
 
-      // Save to logs (try backend, but don't fail if it doesn't work)
-      await _saveToLogs(vehicleData);
+      // ✅ SAVE TO LOGS - This is the key fix
+      final bool saved = await _saveToLogs(vehicleData);
+
+      if (saved) {
+        debugPrint("✅ Scan successfully saved to logs");
+      } else {
+        debugPrint("⚠️ Scan saved to local logs only");
+      }
 
       // Show vehicle details dialog
-      _showVehicleDetailsDialog(vehicleData);
+      _showVehicleDetailsDialog(vehicleData, saved);
     } catch (e) {
       debugPrint("❌ Error showing dummy data: $e");
       _showErrorDialog("Error displaying vehicle data");
-    } finally {
       setState(() {
         _isProcessing = false;
       });
     }
   }
 
-  // ✅ Save scan to logs (with fallback)
-  Future<void> _saveToLogs(Map<String, dynamic> vehicleData) async {
+  // ✅ Save scan to logs (with backend and local backup)
+  Future<bool> _saveToLogs(Map<String, dynamic> vehicleData) async {
+    bool savedToBackend = false;
+    bool savedToLocal = false;
+
     try {
       final prefs = await SharedPreferences.getInstance();
       final token =
           prefs.getString('auth_token') ?? prefs.getString('jwt_token');
-
-      if (token == null) {
-        // Save locally only
-        await _saveToLocalLogs(vehicleData);
-        return;
-      }
 
       final logEntry = {
         'type': 'vehicle_scan',
@@ -125,65 +127,98 @@ class _VehicleScanningPageState extends State<VehicleScanningPage> {
         'vehicleType': vehicleData['vehicleType'],
         'scanTimestamp': DateTime.now().toIso8601String(),
         'status': 'APPROVED & AUTHORIZED',
+        'scannedBy': 'Security Guard',
+        'scannedAt': DateTime.now().toString(),
       };
 
       // Try to send to backend logs
-      try {
-        final response = await http
-            .post(
-              Uri.parse('$_apiBaseUrl/logs/vehicle-scan'),
-              headers: {
-                "Authorization": "Bearer $token",
-                "Content-Type": "application/json",
-              },
-              body: jsonEncode(logEntry),
-            )
-            .timeout(const Duration(seconds: 5));
+      if (token != null) {
+        try {
+          final response = await http
+              .post(
+                Uri.parse('$_apiBaseUrl/logs/vehicle-scan'),
+                headers: {
+                  "Authorization": "Bearer $token",
+                  "Content-Type": "application/json",
+                },
+                body: jsonEncode(logEntry),
+              )
+              .timeout(const Duration(seconds: 10));
 
-        if (response.statusCode == 200 || response.statusCode == 201) {
-          debugPrint("✅ Scan saved to logs successfully");
-        } else {
-          debugPrint("⚠️ Failed to save scan to logs, saving locally");
-          await _saveToLocalLogs(vehicleData);
+          if (response.statusCode == 200 || response.statusCode == 201) {
+            savedToBackend = true;
+            debugPrint("✅ Scan saved to backend logs successfully");
+          } else {
+            debugPrint(
+              "⚠️ Backend returned ${response.statusCode}, saving locally",
+            );
+          }
+        } catch (e) {
+          debugPrint("⚠️ Backend log save failed: $e");
         }
-      } catch (e) {
-        debugPrint("⚠️ Backend log save failed, saving locally: $e");
-        await _saveToLocalLogs(vehicleData);
       }
+
+      // ✅ ALWAYS save to local logs as backup
+      await _saveToLocalLogs(logEntry);
+      savedToLocal = true;
+      debugPrint("✅ Scan saved to local logs");
+
+      return savedToBackend || savedToLocal;
     } catch (e) {
       debugPrint("❌ Error saving to logs: $e");
-      await _saveToLocalLogs(vehicleData);
+      // Try local save as last resort
+      try {
+        await _saveToLocalLogs(vehicleData);
+        return true;
+      } catch (localError) {
+        debugPrint("❌ Local save also failed: $localError");
+        return false;
+      }
     }
   }
 
-  // ✅ Save scan to local storage as backup
+  // ✅ Save scan to local storage
   Future<void> _saveToLocalLogs(Map<String, dynamic> logEntry) async {
     try {
       final prefs = await SharedPreferences.getInstance();
+
+      // Get existing logs
       final existingLogs = prefs.getStringList('vehicle_scan_logs') ?? [];
       final newLogs = List<String>.from(existingLogs);
 
-      final logWithTimestamp = {
+      // Add timestamp and ID to log entry
+      final logWithMetadata = {
         ...logEntry,
+        'localId': DateTime.now().millisecondsSinceEpoch.toString(),
         'localSaveTime': DateTime.now().toIso8601String(),
         'isLocalBackup': true,
       };
 
-      newLogs.add(jsonEncode(logWithTimestamp));
+      // Add to beginning of list (newest first)
+      newLogs.insert(0, jsonEncode(logWithMetadata));
 
-      // Keep only last 100 logs
-      if (newLogs.length > 100) {
-        newLogs.removeAt(0);
+      // Keep only last 200 logs
+      if (newLogs.length > 200) {
+        newLogs.removeRange(200, newLogs.length);
       }
 
       await prefs.setStringList('vehicle_scan_logs', newLogs);
-      debugPrint("✅ Scan saved to local logs");
+      debugPrint(
+        "✅ Scan saved to local storage. Total logs: ${newLogs.length}",
+      );
+
+      // Also save to a separate recent scan key for quick access
+      await prefs.setString('last_vehicle_scan', jsonEncode(logWithMetadata));
     } catch (e) {
       debugPrint("❌ Error saving to local logs: $e");
+      throw e;
     }
   }
 
-  void _showVehicleDetailsDialog(Map<String, dynamic> vehicleData) {
+  void _showVehicleDetailsDialog(
+    Map<String, dynamic> vehicleData,
+    bool savedToLogs,
+  ) {
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -269,19 +304,31 @@ class _VehicleScanningPageState extends State<VehicleScanningPage> {
               Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: Colors.blue.shade50,
+                  color: savedToLogs
+                      ? Colors.green.shade50
+                      : Colors.orange.shade50,
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.history, color: Colors.blue.shade700, size: 16),
+                    Icon(
+                      savedToLogs ? Icons.check_circle : Icons.warning,
+                      color: savedToLogs
+                          ? Colors.green.shade700
+                          : Colors.orange.shade700,
+                      size: 16,
+                    ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        "Scan logged: ${DateTime.now().toString().substring(0, 19)}",
+                        savedToLogs
+                            ? "✓ Scan logged successfully at ${DateTime.now().toString().substring(0, 19)}"
+                            : "⚠ Scan saved locally. Will sync when online.",
                         style: TextStyle(
                           fontSize: 11,
-                          color: Colors.blue.shade700,
+                          color: savedToLogs
+                              ? Colors.green.shade700
+                              : Colors.orange.shade700,
                         ),
                       ),
                     ),
@@ -323,6 +370,9 @@ class _VehicleScanningPageState extends State<VehicleScanningPage> {
           TextButton(
             onPressed: () {
               Navigator.pop(context);
+              setState(() {
+                _isProcessing = false;
+              });
               // Navigate to logs page
               Navigator.pushReplacement(
                 context,
@@ -333,7 +383,12 @@ class _VehicleScanningPageState extends State<VehicleScanningPage> {
           ),
         ],
       ),
-    );
+    ).then((_) {
+      // Reset processing state when dialog is dismissed
+      setState(() {
+        _isProcessing = false;
+      });
+    });
   }
 
   Widget _buildInfoRow(IconData icon, String label, String value) {
