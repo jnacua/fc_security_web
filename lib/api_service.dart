@@ -17,6 +17,12 @@ class ApiService {
   static final int maxReconnectAttempts = 20;
   static bool _isSocketInitialized = false;
 
+  // Track processed alerts to prevent duplicates/spamming
+  static final Set<String> _processedAlertIds = {};
+  static String? _currentActiveAlertId;
+  static bool _isDialogShowing = false;
+  static Timer? _cleanupTimer;
+
   // ================= GLOBAL SOCKET & PANIC ALERTS =================
 
   static void initSocketAndListen() {
@@ -24,7 +30,23 @@ class ApiService {
     _isSocketInitialized = true;
 
     initSocket();
-    _startEmergencyPolling(); // Backup polling
+    _startEmergencyPolling();
+    _startCleanupTimer();
+  }
+
+  static void _startCleanupTimer() {
+    _cleanupTimer?.cancel();
+    _cleanupTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
+      if (_processedAlertIds.length > 50) {
+        final idsToRemove = _processedAlertIds.take(20).toList();
+        for (var id in idsToRemove) {
+          _processedAlertIds.remove(id);
+        }
+      }
+      debugPrint(
+        "🧹 Cleaned up processed alerts cache. Size: ${_processedAlertIds.length}",
+      );
+    });
   }
 
   static IO.Socket initSocket() {
@@ -40,18 +62,17 @@ class ApiService {
 
     debugPrint('🔌 Initializing socket connection...');
 
-    // ✅ FIXED: Correct syntax for socket_io_client 3.1.4
     _socket = IO.io(
       'https://fcapp-backend.onrender.com',
       IO.OptionBuilder()
-          .setTransports(['polling', 'websocket']) // Polling first for Vercel
+          .setTransports(['polling', 'websocket'])
           .setPath('/socket.io')
-          .enableAutoConnect() // ✅ No argument needed
+          .enableAutoConnect()
           .setReconnectionAttempts(maxReconnectAttempts)
           .setReconnectionDelay(2000)
           .setReconnectionDelayMax(15000)
           .setTimeout(40000)
-          .build(), // ✅ Build after all options
+          .build(),
     );
 
     _socket!.onConnect((_) {
@@ -77,11 +98,16 @@ class ApiService {
     _socket!.on('emergency-alert', (data) {
       debugPrint("🚨 EMERGENCY EVENT RECEIVED!");
       debugPrint("📦 Data: $data");
-      _showGlobalPanicDialog(data);
+      _handleEmergencyAlert(data);
     });
 
     _socket!.on('panic-resolved', (data) {
       debugPrint("✅ Panic resolved: $data");
+      final resolvedId = data['id'] ?? data['_id'];
+      if (resolvedId != null && _currentActiveAlertId == resolvedId) {
+        _currentActiveAlertId = null;
+        _isDialogShowing = false;
+      }
     });
 
     _socket!.on('pong', (_) {
@@ -92,6 +118,27 @@ class ApiService {
     debugPrint('🔌 Socket connect() called');
 
     return _socket!;
+  }
+
+  static void _handleEmergencyAlert(dynamic data) {
+    final alertId =
+        data['id'] ??
+        data['_id'] ??
+        '${data['name']}_${data['blockLot']}_${DateTime.now().millisecondsSinceEpoch}';
+
+    if (_processedAlertIds.contains(alertId)) {
+      debugPrint("⚠️ Duplicate alert prevented: $alertId");
+      return;
+    }
+
+    if (_currentActiveAlertId == alertId && _isDialogShowing) {
+      debugPrint("⚠️ Alert already showing, skipping duplicate");
+      return;
+    }
+
+    _processedAlertIds.add(alertId);
+    _currentActiveAlertId = alertId;
+    _showGlobalPanicDialog(data);
   }
 
   static void _startHeartbeat() {
@@ -128,22 +175,43 @@ class ApiService {
 
         if (response.statusCode == 200) {
           final List<dynamic> activePanics = jsonDecode(response.body);
-          if (activePanics.isNotEmpty) {
-            for (var panic in activePanics) {
-              // Only show if not already shown
-              _showGlobalPanicDialog({
-                'id': panic['_id'],
-                'name': panic['residentName'],
-                'blockLot': panic['houseNo'],
-                'latitude': panic['location']?['latitude'],
-                'longitude': panic['location']?['longitude'],
-                'status': 'ACTIVE',
-              });
+          debugPrint("📊 Polling: Found ${activePanics.length} active panics");
+
+          if (activePanics.isEmpty) {
+            if (_currentActiveAlertId != null) {
+              debugPrint("✅ No active panics, resetting alert state");
+              _currentActiveAlertId = null;
+              _isDialogShowing = false;
             }
+            return;
           }
+
+          final latestPanic = activePanics.first;
+          final alertId = latestPanic['_id'] ?? latestPanic['id'];
+
+          if (_processedAlertIds.contains(alertId)) {
+            return;
+          }
+
+          if (_currentActiveAlertId == alertId && _isDialogShowing) {
+            return;
+          }
+
+          _processedAlertIds.add(alertId);
+          _currentActiveAlertId = alertId;
+
+          _showGlobalPanicDialog({
+            'id': alertId,
+            'name': latestPanic['residentName'] ?? latestPanic['name'],
+            'blockLot': latestPanic['blockLot'] ?? latestPanic['houseNo'],
+            'latitude': latestPanic['location']?['latitude'],
+            'longitude': latestPanic['location']?['longitude'],
+            'emergencyType': latestPanic['emergencyType'],
+            'status': 'ACTIVE',
+          });
         }
       } catch (e) {
-        // Silent fail - don't spam console
+        // Silent fail
       }
     });
   }
@@ -156,20 +224,22 @@ class ApiService {
   static void disconnectSocket() {
     _stopHeartbeat();
     _stopEmergencyPolling();
+    _cleanupTimer?.cancel();
     _socket?.disconnect();
     _socket?.clearListeners();
     _socket = null;
     _isSocketInitialized = false;
     _reconnectAttempts = 0;
+    _processedAlertIds.clear();
+    _currentActiveAlertId = null;
+    _isDialogShowing = false;
     debugPrint('🔌 Socket manually disconnected');
   }
 
-  // ✅ THIS FUNCTION OPENS THE NEW TAB
   static Future<void> _launchMap(double lat, double lng) async {
     final String googleMapsUrl =
         "https://www.google.com/maps/search/?api=1&query=$lat,$lng";
     final Uri url = Uri.parse(googleMapsUrl);
-
     if (await canLaunchUrl(url)) {
       await launchUrl(url, mode: LaunchMode.externalApplication);
     } else {
@@ -177,15 +247,88 @@ class ApiService {
     }
   }
 
+  // ✅ Helper function to get emergency type color
+  static Color _getEmergencyColor(String type) {
+    final lowerType = type.toLowerCase();
+    if (lowerType.contains('medical') ||
+        lowerType.contains('heart') ||
+        lowerType.contains('stroke') ||
+        lowerType.contains('bleeding') ||
+        lowerType.contains('unconscious') ||
+        lowerType.contains('seizure') ||
+        lowerType.contains('difficulty breathing')) {
+      return Colors.red;
+    } else if (lowerType.contains('fire')) {
+      return Colors.orange;
+    } else if (lowerType.contains('security') ||
+        lowerType.contains('theft') ||
+        lowerType.contains('robbery') ||
+        lowerType.contains('shooter') ||
+        lowerType.contains('assault')) {
+      return Colors.purple;
+    } else if (lowerType.contains('accident') || lowerType.contains('car')) {
+      return Colors.orange;
+    } else if (lowerType.contains('natural') ||
+        lowerType.contains('flood') ||
+        lowerType.contains('earthquake') ||
+        lowerType.contains('typhoon') ||
+        lowerType.contains('storm')) {
+      return Colors.blue;
+    }
+    return Colors.red;
+  }
+
+  // ✅ Helper function to get emergency type icon
+  static IconData _getEmergencyIcon(String type) {
+    final lowerType = type.toLowerCase();
+    if (lowerType.contains('medical') ||
+        lowerType.contains('heart') ||
+        lowerType.contains('stroke')) {
+      return Icons.local_hospital;
+    } else if (lowerType.contains('fire')) {
+      return Icons.fire_extinguisher;
+    } else if (lowerType.contains('security') ||
+        lowerType.contains('theft') ||
+        lowerType.contains('shooter')) {
+      return Icons.security;
+    } else if (lowerType.contains('accident') || lowerType.contains('car')) {
+      return Icons.car_crash;
+    } else if (lowerType.contains('natural') || lowerType.contains('flood')) {
+      return Icons.water_damage;
+    } else if (lowerType.contains('earthquake')) {
+      return Icons.terrain;
+    } else if (lowerType.contains('typhoon')) {
+      return Icons.cloud;
+    } else if (lowerType.contains('child') ||
+        lowerType.contains('elderly') ||
+        lowerType.contains('missing')) {
+      return Icons.person_search;
+    }
+    return Icons.warning_amber_rounded;
+  }
+
+  // ✅ UPDATED: Show global panic dialog with emergency type
   static void _showGlobalPanicDialog(dynamic data) {
     final context = globalNavigatorKey.currentContext;
     if (context == null) return;
+
+    if (_isDialogShowing) {
+      debugPrint("⚠️ Dialog already showing, skipping");
+      return;
+    }
+
+    _isDialogShowing = true;
 
     final double lat =
         double.tryParse(data['latitude']?.toString() ?? '14.5995') ?? 14.5995;
     final double lng =
         double.tryParse(data['longitude']?.toString() ?? '120.9842') ??
         120.9842;
+
+    // Get emergency type
+    final String emergencyType = data['emergencyType'] ?? 'Emergency Alert';
+    final Color emergencyColor = _getEmergencyColor(emergencyType);
+    final IconData emergencyIcon = _getEmergencyIcon(emergencyType);
 
     showDialog(
       context: context,
@@ -194,7 +337,7 @@ class ApiService {
         return Dialog(
           backgroundColor: Colors.transparent,
           child: Container(
-            width: 500,
+            width: 550,
             padding: const EdgeInsets.all(40),
             decoration: BoxDecoration(
               color: Colors.white,
@@ -207,7 +350,7 @@ class ApiService {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.report_problem, color: Colors.red, size: 100),
+                const Icon(Icons.report_problem, color: Colors.red, size: 80),
                 const SizedBox(height: 20),
                 const Text(
                   "DISTRESS SIGNAL",
@@ -217,7 +360,37 @@ class ApiService {
                     color: Colors.red,
                   ),
                 ),
-                const Divider(height: 40, thickness: 2),
+                const Divider(height: 30, thickness: 2),
+
+                // ✅ Emergency Type Badge
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: emergencyColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(30),
+                    border: Border.all(color: emergencyColor, width: 1.5),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(emergencyIcon, color: emergencyColor, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        emergencyType.toUpperCase(),
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: emergencyColor,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+
                 Text(
                   "RESIDENT: ${data['name'] ?? data['residentName'] ?? 'UNKNOWN'}"
                       .toUpperCase(),
@@ -225,13 +398,56 @@ class ApiService {
                     fontSize: 22,
                     fontWeight: FontWeight.bold,
                   ),
+                  textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 10),
                 Text(
                   "LOCATION: ${data['blockLot'] ?? data['houseNo'] ?? 'UNKNOWN'}",
-                  style: const TextStyle(fontSize: 20, color: Colors.black87),
+                  style: const TextStyle(fontSize: 18, color: Colors.black87),
+                  textAlign: TextAlign.center,
                 ),
-                const SizedBox(height: 40),
+                const SizedBox(height: 30),
+
+                // ✅ Emergency Type Details Card
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: emergencyColor.withOpacity(0.05),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: emergencyColor.withOpacity(0.3)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(emergencyIcon, color: emergencyColor, size: 28),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              "EMERGENCY TYPE",
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.grey,
+                              ),
+                            ),
+                            Text(
+                              emergencyType,
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: emergencyColor,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 30),
 
                 ElevatedButton.icon(
                   onPressed: () => _launchMap(lat, lng),
@@ -240,7 +456,7 @@ class ApiService {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.blue.shade900,
                     foregroundColor: Colors.white,
-                    minimumSize: const Size(double.infinity, 60),
+                    minimumSize: const Size(double.infinity, 55),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
                     ),
@@ -250,7 +466,10 @@ class ApiService {
                 const SizedBox(height: 15),
 
                 TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(),
+                  onPressed: () {
+                    Navigator.of(ctx).pop();
+                    _isDialogShowing = false;
+                  },
                   child: const Text(
                     "CLOSE ALERT",
                     style: TextStyle(
@@ -264,7 +483,9 @@ class ApiService {
           ),
         );
       },
-    );
+    ).then((_) {
+      _isDialogShowing = false;
+    });
   }
 
   // ================= RESOLVE PANIC =================
@@ -275,7 +496,16 @@ class ApiService {
         headers: await _getHeaders(),
       );
       debugPrint("📡 Resolve Panic Status: ${response.statusCode}");
-      return response.statusCode == 200;
+
+      if (response.statusCode == 200) {
+        _processedAlertIds.remove(panicId);
+        if (_currentActiveAlertId == panicId) {
+          _currentActiveAlertId = null;
+          _isDialogShowing = false;
+        }
+        return true;
+      }
+      return false;
     } catch (e) {
       debugPrint("❌ Resolve Panic Error: $e");
       return false;
@@ -290,26 +520,21 @@ class ApiService {
         Uri.parse('$baseUrl/vehicles/scan/${Uri.encodeComponent(qrData)}'),
         headers: await _getHeaders(),
       );
-
       debugPrint("📡 Vehicle Scan Response Status: ${response.statusCode}");
 
       if (response.statusCode == 200) {
         final Map<String, dynamic> responseData = jsonDecode(response.body);
-        debugPrint("✅ Vehicle verified successfully: ${responseData['data']}");
         return responseData;
       } else if (response.statusCode == 403) {
         final Map<String, dynamic> errorData = jsonDecode(response.body);
-        debugPrint("❌ Vehicle not approved: ${errorData['message']}");
         return {
           'success': false,
           'message': errorData['message'],
           'status': errorData['status'],
         };
       } else if (response.statusCode == 404) {
-        debugPrint("❌ Vehicle not found");
         return {'success': false, 'message': 'Vehicle not found in the system'};
       } else {
-        debugPrint("❌ Vehicle verification failed: ${response.statusCode}");
         return {'success': false, 'message': 'Failed to verify vehicle'};
       }
     } catch (e) {
@@ -328,7 +553,6 @@ class ApiService {
         ),
         headers: await _getHeaders(),
       );
-
       if (response.statusCode == 200) {
         return jsonDecode(response.body);
       }
@@ -347,9 +571,10 @@ class ApiService {
         Uri.parse('$baseUrl/logs/all'),
         headers: await _getHeaders(),
       );
-
       if (response.statusCode == 200) {
-        return jsonDecode(response.body);
+        final data = jsonDecode(response.body);
+        debugPrint("📊 Fetched ${data is List ? data.length : 0} logs");
+        return data;
       }
       debugPrint("❌ Failed to fetch logs: ${response.statusCode}");
       return [];
@@ -365,13 +590,64 @@ class ApiService {
         Uri.parse('$baseUrl/logs/security-stats'),
         headers: await _getHeaders(),
       );
+
+      debugPrint("📊 Dashboard Stats Response Status: ${response.statusCode}");
+      debugPrint("📊 Dashboard Stats Response Body: ${response.body}");
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        debugPrint("📊 Dashboard Stats Data: $data");
+
+        return {
+          'visitors': data['visitors'] ?? data['totalVisitors'] ?? 0,
+          'visitorsToday': data['visitorsToday'] ?? 0,
+          'panics': data['panics'] ?? data['activePanics'] ?? 0,
+          'totalPanics': data['totalPanics'] ?? 0,
+          'vehicleScans': data['vehicleScans'] ?? 0,
+          'incoming': data['incoming'] ?? 0,
+          'outgoing': data['outgoing'] ?? 0,
+        };
+      }
+
+      debugPrint(
+        "❌ Dashboard Stats failed with status: ${response.statusCode}",
+      );
+      return {
+        'visitors': 0,
+        'visitorsToday': 0,
+        'panics': 0,
+        'totalPanics': 0,
+        'vehicleScans': 0,
+        'incoming': 0,
+        'outgoing': 0,
+      };
+    } catch (e) {
+      debugPrint("❌ Dashboard Stats Error: $e");
+      return {
+        'visitors': 0,
+        'visitorsToday': 0,
+        'panics': 0,
+        'totalPanics': 0,
+        'vehicleScans': 0,
+        'incoming': 0,
+        'outgoing': 0,
+      };
+    }
+  }
+
+  static Future<List<dynamic>> getActivePanics() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/logs/panic/active'),
+        headers: await _getHeaders(),
+      );
       if (response.statusCode == 200) {
         return jsonDecode(response.body);
       }
-      return {"incoming": 0, "outgoing": 0, "visitors": 0, "panics": 0};
+      return [];
     } catch (e) {
-      debugPrint("❌ Dashboard Stats Error: $e");
-      return {"incoming": 0, "outgoing": 0, "visitors": 0, "panics": 0};
+      debugPrint("❌ Get active panics error: $e");
+      return [];
     }
   }
 
@@ -448,7 +724,9 @@ class ApiService {
         await prefs.setString('auth_token', data['token']);
         _token = data['token'];
 
-        // Initialize socket after successful login
+        _processedAlertIds.clear();
+        _currentActiveAlertId = null;
+        _isDialogShowing = false;
         initSocketAndListen();
 
         return data;

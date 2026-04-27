@@ -19,111 +19,149 @@ class _SecurityLogsState extends State<SecurityLogs> {
   String _searchQuery = '';
   String _filterType = 'ALL';
   bool _isPrinting = false;
-  List<dynamic> _localLogs = [];
-  bool _isLoadingLocal = true;
 
   @override
   void initState() {
     super.initState();
-    _loadLocalLogs();
     _refreshLogs();
-  }
-
-  // ✅ Load local logs from SharedPreferences
-  Future<void> _loadLocalLogs() async {
-    setState(() {
-      _isLoadingLocal = true;
-    });
-
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final localLogsJson = prefs.getStringList('vehicle_scan_logs') ?? [];
-
-      List<dynamic> localLogs = [];
-      for (var logJson in localLogsJson) {
-        try {
-          final log = jsonDecode(logJson);
-          localLogs.add(log);
-        } catch (e) {
-          print("Error parsing log: $e");
-        }
-      }
-
-      setState(() {
-        _localLogs = localLogs;
-        _isLoadingLocal = false;
-      });
-
-      print("✅ Loaded ${_localLogs.length} local logs");
-    } catch (e) {
-      print("❌ Error loading local logs: $e");
-      setState(() {
-        _isLoadingLocal = false;
-      });
-    }
   }
 
   void _refreshLogs() {
     setState(() {
       _logsFuture = ApiService.getAllSecurityLogs();
     });
-    _loadLocalLogs();
   }
 
-  // ✅ Combine local and backend logs
-  Future<List<dynamic>> _getCombinedLogs() async {
-    final backendLogs = await _logsFuture;
-    List<dynamic> combinedLogs = [..._localLogs];
+  // ✅ Generate a unique ID for each log based on plate + timestamp (rounded to minute) + type
+  String _getUniqueLogId(dynamic log) {
+    final plate =
+        log['plateNumber'] ??
+        log['visitorName'] ??
+        log['residentName'] ??
+        'unknown';
 
-    if (backendLogs != null) {
-      combinedLogs.addAll(backendLogs);
-    }
+    String timeKey = '';
+    final timestamp =
+        log['scanTimestamp'] ??
+        log['entryTime'] ??
+        log['timestamp'] ??
+        log['createdAt'];
 
-    // Remove duplicates based on plateNumber and timestamp
-    final uniqueLogs = <String, dynamic>{};
-    for (var log in combinedLogs) {
-      final key =
-          '${log['plateNumber']}_${log['scanTimestamp'] ?? log['localSaveTime'] ?? log['createdAt']}';
-      if (!uniqueLogs.containsKey(key)) {
-        uniqueLogs[key] = log;
+    if (timestamp != null) {
+      try {
+        final date = DateTime.parse(timestamp.toString());
+        timeKey =
+            '${date.year}${date.month}${date.day}${date.hour}${date.minute}';
+      } catch (e) {
+        timeKey = timestamp.toString();
       }
     }
 
-    // Sort by timestamp (newest first)
-    final sortedLogs = uniqueLogs.values.toList();
-    sortedLogs.sort((a, b) {
-      final timeA =
-          a['scanTimestamp'] ?? a['localSaveTime'] ?? a['createdAt'] ?? '';
-      final timeB =
-          b['scanTimestamp'] ?? b['localSaveTime'] ?? b['createdAt'] ?? '';
-      return timeB.compareTo(timeA);
-    });
+    final type = log['type'] ?? 'unknown';
+    return '$plate|$timeKey|$type';
+  }
 
-    return sortedLogs;
+  // ✅ Remove duplicate logs from the list
+  List<dynamic> _removeDuplicates(List<dynamic> logs) {
+    final seen = <String, dynamic>{};
+    final result = <dynamic>[];
+
+    for (var log in logs) {
+      final id = _getUniqueLogId(log);
+      if (!seen.containsKey(id)) {
+        seen[id] = log;
+        result.add(log);
+      }
+    }
+
+    print("📊 Removed duplicates: ${logs.length} -> ${result.length}");
+    return result;
+  }
+
+  // ✅ Helper function to extract formatted time from any log type
+  String _getFormattedTime(dynamic log) {
+    if (log['formattedTime'] != null &&
+        log['formattedTime'].toString().contains(' - ')) {
+      return log['formattedTime'].toString();
+    }
+
+    if (log['localSaveTime'] != null) {
+      return _formatPhilippineTime(log['localSaveTime']);
+    }
+
+    final timestamp =
+        log['scanTimestamp'] ??
+        log['entryTime'] ??
+        log['timestamp'] ??
+        log['createdAt'];
+
+    if (timestamp != null) {
+      return _formatPhilippineTime(timestamp);
+    }
+
+    return '--:-- --';
+  }
+
+  // ✅ Format UTC time to Philippine Time (UTC+8)
+  String _formatPhilippineTime(dynamic timestamp) {
+    if (timestamp == null) return '--:-- --';
+    try {
+      DateTime time;
+      if (timestamp is String) {
+        time = DateTime.parse(timestamp);
+      } else if (timestamp is DateTime) {
+        time = timestamp;
+      } else {
+        return '--:-- --';
+      }
+
+      final philippineTime = time.add(const Duration(hours: 8));
+
+      return '${_getMonthAbbr(philippineTime.month)} ${philippineTime.day}, ${philippineTime.year} - ${_formatTime(philippineTime)}';
+    } catch (e) {
+      return '--:-- --';
+    }
+  }
+
+  // ✅ Helper function to extract timestamp for sorting
+  dynamic _extractTimestamp(dynamic log) {
+    if (log['scanTimestamp'] != null) return log['scanTimestamp'];
+    if (log['entryTime'] != null) return log['entryTime'];
+    if (log['timestamp'] != null) return log['timestamp'];
+    if (log['createdAt'] != null) return log['createdAt'];
+    if (log['localSaveTime'] != null) return log['localSaveTime'];
+    return null;
   }
 
   // ✅ Filter logs based on search query and type filter
   List<dynamic> _filterLogs(List<dynamic> logs) {
     return logs.where((log) {
-      // Filter by type
       if (_filterType != 'ALL') {
-        final logType = log['type'] ?? 'VEHICLE_SCAN';
-        if (logType != _filterType) {
+        final logType = log['type']?.toString().toUpperCase() ?? 'VEHICLE_SCAN';
+        if (logType != _filterType &&
+            !(_filterType == 'VEHICLE_SCAN' && logType == 'VEHICLE')) {
           return false;
         }
       }
 
-      // Filter by search query (name, plate number, or block)
       if (_searchQuery.isNotEmpty) {
         final searchLower = _searchQuery.toLowerCase();
-        final name = (log['name'] ?? log['ownerName'] ?? '').toLowerCase();
-        final plateNumber = (log['plateNumber'] ?? '').toLowerCase();
-        final block = (log['blockLot'] ?? log['ownerAddress'] ?? '')
-            .toLowerCase();
+        final name =
+            (log['name'] ??
+                    log['ownerName'] ??
+                    log['visitorName'] ??
+                    log['residentName'] ??
+                    '')
+                .toString()
+                .toLowerCase();
+        final plateNumber = (log['plateNumber'] ?? '').toString().toLowerCase();
+        final details = (log['details'] ?? '').toString().toLowerCase();
+        final purpose = (log['purpose'] ?? '').toString().toLowerCase();
 
         if (!name.contains(searchLower) &&
             !plateNumber.contains(searchLower) &&
-            !block.contains(searchLower)) {
+            !details.contains(searchLower) &&
+            !purpose.contains(searchLower)) {
           return false;
         }
       }
@@ -141,7 +179,6 @@ class _SecurityLogsState extends State<SecurityLogs> {
     try {
       final pdf = pw.Document();
 
-      // Add cover page
       pdf.addPage(
         pw.MultiPage(
           build: (context) => [
@@ -190,7 +227,6 @@ class _SecurityLogsState extends State<SecurityLogs> {
         ),
       );
 
-      // Add logs data page
       pdf.addPage(
         pw.MultiPage(
           pageFormat: PdfPageFormat.a4,
@@ -219,12 +255,10 @@ class _SecurityLogsState extends State<SecurityLogs> {
               cellAlignment: pw.Alignment.centerLeft,
               cellPadding: const pw.EdgeInsets.all(5),
               data: logs.map((log) {
-                final timestamp = _formatTimestampForPDF(
-                  log['scanTimestamp'] ??
-                      log['localSaveTime'] ??
-                      log['createdAt'],
+                final timestamp = _getFormattedTime(log);
+                final type = _getLogTypeDisplay(
+                  log['type']?.toString() ?? 'VEHICLE_SCAN',
                 );
-                final type = _getLogTypeDisplay(log['type'] ?? 'VEHICLE_SCAN');
                 final details = _getLogDetails(log);
                 final status = log['status'] ?? 'COMPLETED';
                 return [timestamp, type, details, status];
@@ -240,7 +274,6 @@ class _SecurityLogsState extends State<SecurityLogs> {
         ),
       );
 
-      // Print the PDF
       await Printing.layoutPdf(
         onLayout: (PdfPageFormat format) async => pdf.save(),
         name: 'Security_Logs_Report_${DateTime.now().toIso8601String()}.pdf',
@@ -262,26 +295,6 @@ class _SecurityLogsState extends State<SecurityLogs> {
     }
   }
 
-  // ✅ Format timestamp for PDF
-  String _formatTimestampForPDF(dynamic timestamp) {
-    if (timestamp == null) return '--:-- --';
-
-    try {
-      DateTime time;
-      if (timestamp is String) {
-        time = DateTime.parse(timestamp);
-      } else if (timestamp is DateTime) {
-        time = timestamp;
-      } else {
-        return timestamp.toString();
-      }
-
-      return '${time.month}/${time.day}/${time.year} ${_formatTime(time)}';
-    } catch (e) {
-      return timestamp.toString();
-    }
-  }
-
   // ✅ Show report options dialog
   void _showReportOptions() {
     showDialog(
@@ -297,12 +310,14 @@ class _SecurityLogsState extends State<SecurityLogs> {
               subtitle: const Text("Export all vehicle scan records"),
               onTap: () async {
                 Navigator.pop(context);
-                final combinedLogs = await _getCombinedLogs();
-                final vehicleLogs = combinedLogs
+                final logs = await _logsFuture;
+                final vehicleLogs = logs
                     .where(
                       (log) =>
                           log['type'] == 'VEHICLE_SCAN' ||
-                          log['plateNumber'] != null,
+                          log['type'] == 'VEHICLE' ||
+                          (log['plateNumber'] != null &&
+                              log['ownerName'] != null),
                     )
                     .toList();
                 await _generatePDFReport(
@@ -318,15 +333,14 @@ class _SecurityLogsState extends State<SecurityLogs> {
               onTap: () async {
                 Navigator.pop(context);
                 final logs = await _logsFuture;
-                if (logs != null) {
-                  final panicLogs = logs
-                      .where((log) => log['type'] == 'PANIC')
-                      .toList();
-                  await _generatePDFReport(
-                    panicLogs,
-                    "PANIC ALERT LOGS REPORT",
-                  );
-                }
+                final panicLogs = logs
+                    .where(
+                      (log) =>
+                          log['type'] == 'PANIC' ||
+                          log['emergencyType'] != null,
+                    )
+                    .toList();
+                await _generatePDFReport(panicLogs, "PANIC ALERT LOGS REPORT");
               },
             ),
             ListTile(
@@ -336,12 +350,14 @@ class _SecurityLogsState extends State<SecurityLogs> {
               onTap: () async {
                 Navigator.pop(context);
                 final logs = await _logsFuture;
-                if (logs != null) {
-                  final visitorLogs = logs
-                      .where((log) => log['type'] == 'VISITOR')
-                      .toList();
-                  await _generatePDFReport(visitorLogs, "VISITOR LOGS REPORT");
-                }
+                final visitorLogs = logs
+                    .where(
+                      (log) =>
+                          log['type'] == 'VISITOR' ||
+                          log['visitorName'] != null,
+                    )
+                    .toList();
+                await _generatePDFReport(visitorLogs, "VISITOR LOGS REPORT");
               },
             ),
             const Divider(),
@@ -351,11 +367,8 @@ class _SecurityLogsState extends State<SecurityLogs> {
               subtitle: const Text("Export all security logs"),
               onTap: () async {
                 Navigator.pop(context);
-                final combinedLogs = await _getCombinedLogs();
-                await _generatePDFReport(
-                  combinedLogs,
-                  "COMPLETE SECURITY LOGS REPORT",
-                );
+                final logs = await _logsFuture;
+                await _generatePDFReport(logs, "COMPLETE SECURITY LOGS REPORT");
               },
             ),
           ],
@@ -374,6 +387,7 @@ class _SecurityLogsState extends State<SecurityLogs> {
   String _getLogTypeDisplay(String type) {
     switch (type.toUpperCase()) {
       case 'VEHICLE_SCAN':
+      case 'VEHICLE':
         return 'VEHICLE';
       case 'PANIC':
         return 'PANIC';
@@ -388,6 +402,7 @@ class _SecurityLogsState extends State<SecurityLogs> {
   Color _getLogTypeColor(String type) {
     switch (type.toUpperCase()) {
       case 'VEHICLE_SCAN':
+      case 'VEHICLE':
         return Colors.green;
       case 'PANIC':
         return Colors.red;
@@ -398,12 +413,13 @@ class _SecurityLogsState extends State<SecurityLogs> {
     }
   }
 
-  // ✅ Get log details text
+  // ✅ FIXED: Get log details text with better location extraction for panic reports
   String _getLogDetails(Map<String, dynamic> log) {
-    final type = log['type']?.toUpperCase() ?? 'VEHICLE_SCAN';
+    final type = log['type']?.toString().toUpperCase() ?? 'VEHICLE_SCAN';
 
     switch (type) {
       case 'VEHICLE_SCAN':
+      case 'VEHICLE':
         final plateNumber = log['plateNumber'] ?? 'N/A';
         final ownerName = log['ownerName'] ?? '';
         final vehicleType = log['vehicleType'] ?? '';
@@ -411,15 +427,54 @@ class _SecurityLogsState extends State<SecurityLogs> {
         if (ownerName.isNotEmpty) details += ' - $ownerName';
         if (vehicleType.isNotEmpty) details += ' ($vehicleType)';
         return details;
+
       case 'PANIC':
-        final blockLot = log['blockLot'] ?? log['ownerAddress'] ?? 'N/A';
-        final residentName = log['name'] ?? 'Unknown Resident';
-        return '$residentName - Location: $blockLot';
+        final residentName =
+            log['residentName'] ?? log['name'] ?? 'Unknown Resident';
+
+        // Try multiple possible location fields
+        String location =
+            log['blockLot'] ??
+            log['houseNo'] ??
+            log['address'] ??
+            log['location']?.toString() ??
+            'Unknown Location';
+
+        // If location is still N/A or empty, try to get from user data if available
+        if (location == 'N/A' ||
+            location == 'Unknown Location' ||
+            location.isEmpty) {
+          location =
+              log['userBlockLot'] ??
+              log['userId_blockLot'] ??
+              'Address not available';
+        }
+
+        // Add emergency type if available
+        final emergencyType = log['emergencyType'];
+        String details = '$residentName - Location: $location';
+        if (emergencyType != null &&
+            emergencyType != 'Emergency Alert' &&
+            emergencyType != 'N/A') {
+          details += ' [$emergencyType]';
+        }
+        return details;
+
       case 'VISITOR':
-        return log['purpose'] ??
-            log['details'] ??
-            log['name'] ??
-            'Visitor Entry';
+        final visitorName =
+            log['visitorName'] ?? log['name'] ?? 'Unknown Visitor';
+        final purpose = log['purpose'] ?? 'Visit';
+        final plateNumber = log['plateNumber'];
+        String details = '$visitorName - $purpose';
+        if (log['residentToVisit'] != null &&
+            log['residentToVisit'] != 'Unknown') {
+          details += ' (Visiting: ${log['residentToVisit']})';
+        }
+        if (plateNumber != null && plateNumber != 'N/A') {
+          details += ' [Vehicle: $plateNumber]';
+        }
+        return details;
+
       default:
         final plateNumber = log['plateNumber'] ?? 'N/A';
         final ownerName = log['ownerName'] ?? '';
@@ -432,36 +487,15 @@ class _SecurityLogsState extends State<SecurityLogs> {
     final statusUpper = status.toUpperCase();
     if (statusUpper == 'APPROVED' ||
         statusUpper == 'AUTHORIZED' ||
-        statusUpper == 'RESOLVED') {
+        statusUpper == 'RESOLVED' ||
+        statusUpper == 'COMPLETED') {
       return Colors.green;
-    } else if (statusUpper == 'PENDING') {
+    } else if (statusUpper == 'PENDING' || statusUpper == 'ACTIVE') {
       return Colors.orange;
     } else if (statusUpper == 'REJECTED') {
       return Colors.red;
     }
     return Colors.green;
-  }
-
-  // ✅ Get formatted timestamp
-  String _formatTimestamp(dynamic timestamp) {
-    if (timestamp == null) return '--:-- --';
-
-    try {
-      DateTime time;
-      if (timestamp is String) {
-        time = DateTime.parse(timestamp);
-      } else if (timestamp is DateTime) {
-        time = timestamp;
-      } else {
-        return timestamp.toString();
-      }
-
-      final formatted =
-          '${_getMonthAbbr(time.month)} ${time.day}, ${time.year} - ${_formatTime(time)}';
-      return formatted;
-    } catch (e) {
-      return timestamp.toString();
-    }
   }
 
   String _getMonthAbbr(int month) {
@@ -517,11 +551,10 @@ class _SecurityLogsState extends State<SecurityLogs> {
                           _buildTableHeader(),
                           Expanded(
                             child: FutureBuilder<List<dynamic>>(
-                              future: _getCombinedLogs(),
+                              future: _logsFuture,
                               builder: (context, snapshot) {
                                 if (snapshot.connectionState ==
-                                        ConnectionState.waiting ||
-                                    _isLoadingLocal) {
+                                    ConnectionState.waiting) {
                                   return const Center(
                                     child: CircularProgressIndicator(),
                                   );
@@ -569,18 +602,16 @@ class _SecurityLogsState extends State<SecurityLogs> {
                                         SizedBox(height: 5),
                                         Text(
                                           "Scan a vehicle QR code to see logs here",
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: Colors.grey,
-                                          ),
                                         ),
                                       ],
                                     ),
                                   );
                                 }
 
-                                final allLogs = snapshot.data!;
-                                final filteredLogs = _filterLogs(allLogs);
+                                final uniqueLogs = _removeDuplicates(
+                                  snapshot.data!,
+                                );
+                                final filteredLogs = _filterLogs(uniqueLogs);
 
                                 if (filteredLogs.isEmpty) {
                                   return const Center(
@@ -602,24 +633,22 @@ class _SecurityLogsState extends State<SecurityLogs> {
                                     itemBuilder: (context, index) {
                                       final log = filteredLogs[index];
                                       final logType = _getLogTypeDisplay(
-                                        log['type'] ?? 'VEHICLE_SCAN',
+                                        log['type']?.toString() ??
+                                            'VEHICLE_SCAN',
                                       );
                                       final logDetails = _getLogDetails(log);
                                       final status =
                                           log['status'] ?? 'APPROVED';
-                                      final timestamp = _formatTimestamp(
-                                        log['scanTimestamp'] ??
-                                            log['localSaveTime'] ??
-                                            log['createdAt'],
-                                      );
+                                      final time = _getFormattedTime(log);
 
                                       return _buildLogRow(
                                         logType,
                                         logDetails,
                                         status,
-                                        timestamp,
+                                        time,
                                         _getLogTypeColor(
-                                          log['type'] ?? 'VEHICLE_SCAN',
+                                          log['type']?.toString() ??
+                                              'VEHICLE_SCAN',
                                         ),
                                       );
                                     },
@@ -736,11 +765,7 @@ class _SecurityLogsState extends State<SecurityLogs> {
           Expanded(
             flex: 3,
             child: TextField(
-              onChanged: (value) {
-                setState(() {
-                  _searchQuery = value;
-                });
-              },
+              onChanged: (value) => setState(() => _searchQuery = value),
               decoration: const InputDecoration(
                 hintText: "SEARCH BY NAME, PLATE, OR BLOCK...",
                 prefixIcon: Icon(Icons.search),
@@ -769,11 +794,8 @@ class _SecurityLogsState extends State<SecurityLogs> {
                 DropdownMenuItem(value: 'PANIC', child: Text('PANIC ALERTS')),
                 DropdownMenuItem(value: 'VISITOR', child: Text('VISITOR LOGS')),
               ],
-              onChanged: (value) {
-                setState(() {
-                  _filterType = value ?? 'ALL';
-                });
-              },
+              onChanged: (value) =>
+                  setState(() => _filterType = value ?? 'ALL'),
             ),
           ),
           const SizedBox(width: 8),

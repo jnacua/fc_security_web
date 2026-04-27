@@ -16,6 +16,8 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _purposeController = TextEditingController();
   final TextEditingController _hostController = TextEditingController();
+  final TextEditingController _plateNumberController =
+      TextEditingController(); // ✅ Added plate number controller
 
   Map<String, dynamic>? visitorData;
   Map<String, dynamic>? activePanicAlert;
@@ -43,6 +45,7 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
     _nameController.dispose();
     _purposeController.dispose();
     _hostController.dispose();
+    _plateNumberController.dispose(); // ✅ Dispose plate number controller
     socket.off('emergency-alert');
     socket.off('panic-resolved');
     super.dispose();
@@ -64,6 +67,9 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
         'name': _nameController.text.trim(),
         'purpose': _purposeController.text.trim(),
         'hostName': _hostController.text.trim(),
+        'plateNumber': _plateNumberController.text.trim().isEmpty
+            ? 'N/A'
+            : _plateNumberController.text.trim().toUpperCase(),
       };
     });
   }
@@ -77,6 +83,8 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
       'name': visitorData!['name'],
       'purpose': visitorData!['purpose'],
       'hostName': visitorData!['hostName'],
+      'plateNumber':
+          visitorData!['plateNumber'] ?? 'N/A', // ✅ Include plate number
     };
 
     // ✅ Logs the entry to your backend
@@ -95,6 +103,7 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
         _nameController.clear();
         _purposeController.clear();
         _hostController.clear();
+        _plateNumberController.clear(); // ✅ Clear plate number field
       });
     } else {
       if (!mounted) return;
@@ -225,6 +234,13 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
               _hostController,
               Icons.home_work,
             ),
+            const SizedBox(height: 16),
+            _buildTextField(
+              "Vehicle Plate Number (Optional)",
+              _plateNumberController,
+              Icons.directions_car,
+              keyboardType: TextInputType.text,
+            ),
             const SizedBox(height: 32),
             ElevatedButton(
               onPressed: _previewVisitorData,
@@ -249,6 +265,7 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
                   _nameController.clear();
                   _purposeController.clear();
                   _hostController.clear();
+                  _plateNumberController.clear(); // ✅ Clear plate number
                 });
               },
               child: const Center(
@@ -267,8 +284,9 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
   Widget _buildTextField(
     String label,
     TextEditingController controller,
-    IconData icon,
-  ) {
+    IconData icon, {
+    TextInputType keyboardType = TextInputType.text,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -283,6 +301,10 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
         const SizedBox(height: 8),
         TextField(
           controller: controller,
+          keyboardType: keyboardType,
+          textCapitalization: label.contains("Plate")
+              ? TextCapitalization.characters
+              : TextCapitalization.words,
           decoration: InputDecoration(
             prefixIcon: Icon(icon, color: const Color(0xFF176F63)),
             filled: true,
@@ -363,12 +385,52 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
             visitorData!['name'].toString().toUpperCase(),
             style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w900),
           ),
+          const SizedBox(height: 8),
           Text(
             "Visiting: ${visitorData!['hostName']}",
             style: const TextStyle(fontSize: 18, color: Colors.grey),
           ),
+          const SizedBox(height: 12),
+          // ✅ Display plate number if provided
+          if (visitorData!['plateNumber'] != null &&
+              visitorData!['plateNumber'] != 'N/A')
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.blue.shade200),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.directions_car,
+                    size: 18,
+                    color: Colors.blue.shade700,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    "Vehicle: ${visitorData!['plateNumber']}",
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blue.shade700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           const Divider(height: 60),
           _buildInfoRow(Icons.info_outline, "Purpose", visitorData!['purpose']),
+          const SizedBox(height: 16),
+          if (visitorData!['plateNumber'] != null &&
+              visitorData!['plateNumber'] != 'N/A')
+            _buildInfoRow(
+              Icons.directions_car,
+              "Plate Number",
+              visitorData!['plateNumber'],
+            ),
           const Spacer(),
           const Text(
             "Verify that all credentials above are correct before saving to the logbook.",
@@ -417,9 +479,12 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
             color: Colors.blueGrey,
           ),
         ),
-        Text(
-          value.isEmpty ? "N/A" : value,
-          style: const TextStyle(fontSize: 16),
+        Expanded(
+          child: Text(
+            value.isEmpty ? "N/A" : value,
+            style: const TextStyle(fontSize: 16),
+            overflow: TextOverflow.ellipsis,
+          ),
         ),
       ],
     );
@@ -451,14 +516,14 @@ class _VisitorScanningScreenState extends State<VisitorScanningScreen> {
               ),
               const Divider(height: 40),
               Text(
-                "RESIDENT: ${activePanicAlert!['name']}",
+                "RESIDENT: ${activePanicAlert!['name'] ?? 'Unknown'}",
                 style: const TextStyle(
                   fontSize: 22,
                   fontWeight: FontWeight.bold,
                 ),
               ),
               Text(
-                "LOCATION: ${activePanicAlert!['blockLot']}",
+                "LOCATION: ${activePanicAlert!['blockLot'] ?? 'Unknown'}",
                 style: const TextStyle(fontSize: 20),
               ),
               const SizedBox(height: 40),

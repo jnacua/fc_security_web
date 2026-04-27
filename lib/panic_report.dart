@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart'; // ✅ UNCOMMENTED
+import 'package:shared_preferences/shared_preferences.dart';
 import 'security_sidebar.dart';
 
 class PanicReportScreen extends StatefulWidget {
@@ -14,10 +14,77 @@ class PanicReportScreen extends StatefulWidget {
 class _PanicReportScreenState extends State<PanicReportScreen> {
   final String apiUrl = "https://fcapp-backend.onrender.com/api/panic";
 
-  // ✅ FIXED: Corrected token retrieval
   Future<String?> _getToken() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString('jwt_token');
+  }
+
+  // ✅ Format UTC time to Philippine Time (UTC+8)
+  String _formatPhilippineTime(String utcTime) {
+    if (utcTime.isEmpty) return '--:-- --';
+    try {
+      // Parse UTC time
+      DateTime utcDateTime = DateTime.parse(utcTime);
+      // Add 8 hours for Philippine Time
+      DateTime philippineTime = utcDateTime.add(const Duration(hours: 8));
+
+      // Format as "Apr 27, 2026 - 2:37 PM"
+      const months = [
+        'Jan',
+        'Feb',
+        'Mar',
+        'Apr',
+        'May',
+        'Jun',
+        'Jul',
+        'Aug',
+        'Sep',
+        'Oct',
+        'Nov',
+        'Dec',
+      ];
+      String month = months[philippineTime.month - 1];
+      int day = philippineTime.day;
+      int year = philippineTime.year;
+      int hour = philippineTime.hour;
+      String minute = philippineTime.minute.toString().padLeft(2, '0');
+      String period = hour >= 12 ? 'PM' : 'AM';
+      hour = hour % 12;
+      if (hour == 0) hour = 12;
+
+      return '$month $day, $year - $hour:$minute $period';
+    } catch (e) {
+      return utcTime;
+    }
+  }
+
+  // ✅ Format only the date part
+  String _formatDateOnly(String utcTime) {
+    if (utcTime.isEmpty) return '--/--/----';
+    try {
+      DateTime utcDateTime = DateTime.parse(utcTime);
+      DateTime philippineTime = utcDateTime.add(const Duration(hours: 8));
+      return '${philippineTime.year}-${philippineTime.month.toString().padLeft(2, '0')}-${philippineTime.day.toString().padLeft(2, '0')}';
+    } catch (e) {
+      return utcTime.substring(0, 10);
+    }
+  }
+
+  // ✅ Format only the time part
+  String _formatTimeOnly(String utcTime) {
+    if (utcTime.isEmpty) return '--:-- --';
+    try {
+      DateTime utcDateTime = DateTime.parse(utcTime);
+      DateTime philippineTime = utcDateTime.add(const Duration(hours: 8));
+      int hour = philippineTime.hour;
+      String minute = philippineTime.minute.toString().padLeft(2, '0');
+      String period = hour >= 12 ? 'PM' : 'AM';
+      hour = hour % 12;
+      if (hour == 0) hour = 12;
+      return '$hour:$minute $period';
+    } catch (e) {
+      return utcTime.substring(11, 16);
+    }
   }
 
   Future<List<dynamic>> fetchPanicReports() async {
@@ -56,10 +123,22 @@ class _PanicReportScreenState extends State<PanicReportScreen> {
       );
 
       if (response.statusCode == 200) {
-        setState(() {}); // Refresh the list to show it as Resolved
+        setState(() {});
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Panic report resolved successfully"),
+            backgroundColor: Colors.green,
+          ),
+        );
       }
     } catch (e) {
       debugPrint("Error resolving: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Error resolving report: $e"),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
@@ -96,12 +175,43 @@ class _PanicReportScreenState extends State<PanicReportScreen> {
                             );
                           } else if (snapshot.hasError) {
                             return Center(
-                              child: Text("Error: ${snapshot.error}"),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(
+                                    Icons.error_outline,
+                                    size: 50,
+                                    color: Colors.red,
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Text("Error: ${snapshot.error}"),
+                                  const SizedBox(height: 10),
+                                  ElevatedButton(
+                                    onPressed: () => setState(() {}),
+                                    child: const Text("RETRY"),
+                                  ),
+                                ],
+                              ),
                             );
                           } else if (!snapshot.hasData ||
                               snapshot.data!.isEmpty) {
                             return const Center(
-                              child: Text("No panic records found."),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.history,
+                                    size: 50,
+                                    color: Colors.grey,
+                                  ),
+                                  SizedBox(height: 10),
+                                  Text("No panic records found."),
+                                  SizedBox(height: 5),
+                                  Text(
+                                    "All panic alerts will appear here once sent.",
+                                  ),
+                                ],
+                              ),
                             );
                           }
 
@@ -110,7 +220,6 @@ class _PanicReportScreenState extends State<PanicReportScreen> {
                             itemCount: snapshot.data!.length,
                             itemBuilder: (context, index) {
                               final report = snapshot.data![index];
-                              // ✅ Accepts 'Pending' or 'Active' as the active state
                               bool isActive =
                                   report['status'].toString().toLowerCase() !=
                                   'resolved';
@@ -121,9 +230,12 @@ class _PanicReportScreenState extends State<PanicReportScreen> {
                                   report['_id'],
                                   "PANIC ALERT",
                                   report['residentName'] ?? "Unknown Resident",
-                                  report['houseNo'] ?? "No House No",
+                                  report['houseNo'] ??
+                                      report['blockLot'] ??
+                                      "No Address",
                                   isActive,
                                   report['createdAt'] ?? "",
+                                  report['emergencyType'] ?? "Emergency Alert",
                                 ),
                               );
                             },
@@ -148,7 +260,26 @@ class _PanicReportScreenState extends State<PanicReportScreen> {
     String loc,
     bool isActive,
     String time,
+    String emergencyType,
   ) {
+    // Format the time to Philippine Time
+    final formattedDateTime = _formatPhilippineTime(time);
+    final formattedDate = _formatDateOnly(time);
+    final formattedTimeOnly = _formatTimeOnly(time);
+
+    // Determine emergency type color
+    Color emergencyColor = Colors.orange;
+    if (emergencyType.contains('Medical') ||
+        emergencyType.contains('Heart') ||
+        emergencyType.contains('Stroke')) {
+      emergencyColor = Colors.red;
+    } else if (emergencyType.contains('Fire')) {
+      emergencyColor = Colors.orange;
+    } else if (emergencyType.contains('Security') ||
+        emergencyType.contains('Theft')) {
+      emergencyColor = Colors.purple;
+    }
+
     return Container(
       decoration: BoxDecoration(
         color: isActive ? const Color(0xFFFFEBEE) : Colors.white,
@@ -168,13 +299,39 @@ class _PanicReportScreenState extends State<PanicReportScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  type.toUpperCase(),
-                  style: TextStyle(
-                    color: isActive ? Colors.red : Colors.black87,
-                    fontWeight: FontWeight.w900,
-                    fontSize: 18,
-                  ),
+                Row(
+                  children: [
+                    Text(
+                      type.toUpperCase(),
+                      style: TextStyle(
+                        color: isActive ? Colors.red : Colors.black87,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 18,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: emergencyColor.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: emergencyColor.withOpacity(0.5),
+                        ),
+                      ),
+                      child: Text(
+                        emergencyType,
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          color: emergencyColor,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 4),
                 Text(
@@ -182,17 +339,35 @@ class _PanicReportScreenState extends State<PanicReportScreen> {
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
                 Text(
-                  "House No: $loc",
+                  "Location: $loc",
                   style: const TextStyle(color: Colors.black54),
                 ),
-                if (time.isNotEmpty)
-                  Text(
-                    "Date: ${time.substring(0, 10)} | Time: ${time.substring(11, 16)}",
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontStyle: FontStyle.italic,
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(
+                      Icons.calendar_today,
+                      size: 12,
+                      color: Colors.grey.shade600,
                     ),
-                  ),
+                    const SizedBox(width: 4),
+                    Text(
+                      formattedDate,
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    const SizedBox(width: 12),
+                    Icon(
+                      Icons.access_time,
+                      size: 12,
+                      color: Colors.grey.shade600,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      formattedTimeOnly,
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
@@ -202,6 +377,13 @@ class _PanicReportScreenState extends State<PanicReportScreen> {
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.red,
                 foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 12,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
               ),
               child: const Text("MARK RESOLVED"),
             )
@@ -230,16 +412,37 @@ class _PanicReportScreenState extends State<PanicReportScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
       child: Row(
         children: [
-          const Icon(Icons.security, size: 30, color: Color(0xFF176F63)),
+          const Icon(
+            Icons.warning_amber_rounded,
+            size: 30,
+            color: Color(0xFF176F63),
+          ),
           const SizedBox(width: 15),
           const Text(
             "PANIC REPORT HISTORY",
             style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
           ),
           const Spacer(),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.red.shade50,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              "ACTIVE ALERTS",
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: Colors.red.shade700,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
           IconButton(
             onPressed: () => setState(() {}),
             icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh',
           ),
         ],
       ),
